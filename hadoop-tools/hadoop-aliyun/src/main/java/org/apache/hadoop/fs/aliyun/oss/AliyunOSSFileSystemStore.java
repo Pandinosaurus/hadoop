@@ -45,7 +45,7 @@ import com.aliyun.oss.model.UploadPartCopyRequest;
 import com.aliyun.oss.model.UploadPartCopyResult;
 import com.aliyun.oss.model.UploadPartRequest;
 import com.aliyun.oss.model.UploadPartResult;
-import org.apache.commons.collections.CollectionUtils;
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.BlockLocation;
@@ -73,6 +73,7 @@ import java.util.List;
 import java.util.ListIterator;
 import java.util.NoSuchElementException;
 import java.util.stream.Collectors;
+import com.aliyun.oss.common.comm.SignVersion;
 
 import static org.apache.hadoop.fs.aliyun.oss.Constants.*;
 
@@ -112,6 +113,16 @@ public class AliyunOSSFileSystemStore {
     clientConf.setUserAgent(
         conf.get(USER_AGENT_PREFIX, USER_AGENT_PREFIX_DEFAULT) + ", Hadoop/"
             + VersionInfo.getVersion());
+
+    String region = conf.get(REGION_KEY, "");
+    String signatureVersion = conf.get(SIGNATURE_VERSION_KEY, SIGNATURE_VERSION_DEFAULT);
+    if ("V4".equalsIgnoreCase(signatureVersion)) {
+      clientConf.setSignatureVersion(SignVersion.V4);
+      if (StringUtils.isEmpty(region)) {
+        LOG.error("Signature version is V4 ,but region is empty.");
+        throw new IOException("SignVersion is V4 but region is empty");
+      }
+    }
 
     String proxyHost = conf.getTrimmed(PROXY_HOST_KEY, "");
     int proxyPort = conf.getInt(PROXY_PORT_KEY, -1);
@@ -169,6 +180,11 @@ public class AliyunOSSFileSystemStore {
           CannedAccessControlList.valueOf(cannedACLName);
       ossClient.setBucketAcl(bucketName, cannedACL);
       statistics.incrementWriteOps(1);
+    }
+
+    if (StringUtils.isNotEmpty(region)) {
+      ossClient.setRegion(region);
+      LOG.debug("ossClient setRegion {}", region);
     }
 
     maxKeys = conf.getInt(MAX_PAGING_KEYS_KEY, MAX_PAGING_KEYS_DEFAULT);
@@ -423,6 +439,27 @@ public class AliyunOSSFileSystemStore {
   }
 
   /**
+   * Upload an input stream as an OSS object, using single upload.
+   * @param key object key.
+   * @param in input stream to upload.
+   * @param size size of the input stream.
+   * @throws IOException if failed to upload object.
+   */
+  public void uploadObject(String key, InputStream in, long size)
+      throws IOException {
+    ObjectMetadata meta = new ObjectMetadata();
+    meta.setContentLength(size);
+
+    if (StringUtils.isNotEmpty(serverSideEncryptionAlgorithm)) {
+      meta.setServerSideEncryption(serverSideEncryptionAlgorithm);
+    }
+
+    PutObjectResult result = ossClient.putObject(bucketName, key, in, meta);
+    LOG.debug(result.getETag());
+    statistics.incrementWriteOps(1);
+  }
+
+  /**
    * list objects.
    *
    * @param listRequest list request.
@@ -652,44 +689,58 @@ public class AliyunOSSFileSystemStore {
     };
   }
 
+  public PartETag uploadPart(OSSDataBlocks.BlockUploadData partData,
+      long size, String key, String uploadId, int idx) throws IOException {
+    if (partData.hasFile()) {
+      return uploadPart(partData.getFile(), key, uploadId, idx);
+    } else {
+      return uploadPart(partData.getUploadStream(), size, key, uploadId, idx);
+    }
+  }
+
   public PartETag uploadPart(File file, String key, String uploadId, int idx)
       throws IOException {
-    InputStream instream = null;
+    InputStream in = new FileInputStream(file);
+    try {
+      return uploadPart(in, file.length(), key, uploadId, idx);
+    } finally {
+      in.close();
+    }
+  }
+
+  public PartETag uploadPart(InputStream in, long size, String key,
+      String uploadId, int idx) throws IOException {
     Exception caught = null;
     int tries = 3;
     while (tries > 0) {
       try {
-        instream = new FileInputStream(file);
         UploadPartRequest uploadRequest = new UploadPartRequest();
         uploadRequest.setBucketName(bucketName);
         uploadRequest.setKey(key);
         uploadRequest.setUploadId(uploadId);
-        uploadRequest.setInputStream(instream);
-        uploadRequest.setPartSize(file.length());
+        uploadRequest.setInputStream(in);
+        uploadRequest.setPartSize(size);
         uploadRequest.setPartNumber(idx);
         UploadPartResult uploadResult = ossClient.uploadPart(uploadRequest);
         statistics.incrementWriteOps(1);
         return uploadResult.getPartETag();
       } catch (Exception e) {
-        LOG.debug("Failed to upload "+ file.getPath() +", " +
+        LOG.debug("Failed to upload " + key + ", part " + idx +
             "try again.", e);
         caught = e;
-      } finally {
-        if (instream != null) {
-          instream.close();
-          instream = null;
-        }
       }
       tries--;
     }
 
     assert (caught != null);
-    throw new IOException("Failed to upload " + file.getPath() +
+    throw new IOException("Failed to upload " + key + ", part " + idx +
         " for 3 times.", caught);
   }
 
   /**
    * Initiate multipart upload.
+   * @param key object key.
+   * @return upload id.
    */
   public String getUploadId(String key) {
     InitiateMultipartUploadRequest initiateMultipartUploadRequest =
@@ -701,6 +752,10 @@ public class AliyunOSSFileSystemStore {
 
   /**
    * Complete the specific multipart upload.
+   * @param key object key.
+   * @param uploadId upload id of this multipart upload.
+   * @param partETags part etags need to be completed.
+   * @return CompleteMultipartUploadResult.
    */
   public CompleteMultipartUploadResult completeMultipartUpload(String key,
       String uploadId, List<PartETag> partETags) {
@@ -713,6 +768,8 @@ public class AliyunOSSFileSystemStore {
 
   /**
    * Abort the specific multipart upload.
+   * @param key object key.
+   * @param uploadId upload id of this multipart upload.
    */
   public void abortMultipartUpload(String key, String uploadId) {
     AbortMultipartUploadRequest request = new AbortMultipartUploadRequest(

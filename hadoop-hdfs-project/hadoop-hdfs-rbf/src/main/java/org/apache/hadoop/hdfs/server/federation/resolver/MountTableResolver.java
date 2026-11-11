@@ -348,14 +348,16 @@ public class MountTableResolver
   }
 
   /**
-   * Check if PATH is the trail associated with the Trash.
+   * Check if path is the trail associated with the Trash.
    *
-   * @param path A path.
+   * @param path a path.
+   * @return true if the path matches the trash path pattern, false otherwise.
+   * @throws IOException if retrieving current user's trash directory fails.
    */
   @VisibleForTesting
   public static boolean isTrashPath(String path) throws IOException {
     Pattern pattern = Pattern.compile(
-        "^" + getTrashRoot() + TRASH_PATTERN + "/");
+        "^" + getTrashRoot() + TRASH_PATTERN);
     return pattern.matcher(path).find();
   }
 
@@ -370,7 +372,9 @@ public class MountTableResolver
   /**
    * Subtract a TrashCurrent to get a new path.
    *
-   * @param path A path.
+   * @param path a path.
+   * @return new path with subtracted trash current path.
+   * @throws IOException if retrieving current user's trash directory fails.
    */
   @VisibleForTesting
   public static String subtractTrashCurrentPath(String path)
@@ -625,14 +629,27 @@ public class MountTableResolver
   private MountTable findDeepest(final String path) {
     readLock.lock();
     try {
-      Entry<String, MountTable> entry = this.tree.floorEntry(path);
-      while (entry != null && !isParentEntry(path, entry.getKey())) {
-        entry = this.tree.lowerEntry(entry.getKey());
+      Entry<String, MountTable> floorEntry = this.tree.floorEntry(path);
+      if (floorEntry != null && isParentEntry(path, floorEntry.getKey())) {
+        return floorEntry.getValue();
       }
-      if (entry == null) {
+      if ("".equals(path)) {
         return null;
       }
-      return entry.getValue();
+      MountTable mountTable;
+      Path currentPath = new Path(path);
+      while (true) {
+        mountTable = tree.getOrDefault(currentPath.toUri().getPath(), null);
+        if (mountTable != null) {
+          break;
+        }
+        if (currentPath.isRoot()) {
+          break;
+        } else {
+          currentPath = currentPath.getParent();
+        }
+      }
+      return mountTable;
     } finally {
       readLock.unlock();
     }
@@ -678,11 +695,16 @@ public class MountTableResolver
    * @return Size of the cache.
    * @throws IOException If the cache is not initialized.
    */
-  protected long getCacheSize() throws IOException{
-    if (this.locationCache != null) {
-      return this.locationCache.size();
+  protected long getCacheSize() throws IOException {
+    this.readLock.lock();
+    try {
+      if (this.locationCache != null) {
+        return this.locationCache.size();
+      }
+      throw new IOException("localCache is null");
+    } finally {
+      this.readLock.unlock();
     }
-    throw new IOException("localCache is null");
   }
 
   @VisibleForTesting

@@ -41,21 +41,21 @@ import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
 import org.apache.hadoop.thirdparty.com.google.common.cache.CacheLoader;
 import org.apache.hadoop.thirdparty.com.google.common.cache.LoadingCache;
 import org.apache.hadoop.thirdparty.com.google.common.cache.RemovalListener;
-import org.junit.After;
-import org.junit.Before;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 
 import static io.netty.util.ResourceLeakDetector.Level.PARANOID;
 import static org.apache.hadoop.io.MapFile.DATA_FILE_NAME;
 import static org.apache.hadoop.io.MapFile.INDEX_FILE_NAME;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestShuffleHandlerBase {
   public static final String TEST_ATTEMPT_1 = "attempt_1111111111111_0001_m_000001_0";
   public static final String TEST_ATTEMPT_2 = "attempt_1111111111111_0002_m_000002_0";
   public static final String TEST_ATTEMPT_3 = "attempt_1111111111111_0003_m_000003_0";
   public static final String TEST_JOB_ID = "job_1111111111111_0001";
-  public static final String TEST_USER = "testUser";
+  public static final String TEST_USER = System.getProperty("user.name");
   public static final String TEST_DATA_A = "aaaaa";
   public static final String TEST_DATA_B = "bbbbb";
   public static final String TEST_DATA_C = "ccccc";
@@ -65,16 +65,16 @@ public class TestShuffleHandlerBase {
   @SuppressWarnings("checkstyle:VisibilityModifier")
   protected java.nio.file.Path tempDir;
 
-  @Before
+  @BeforeEach
   public void setup() throws IOException {
     tempDir = Files.createTempDirectory("test-shuffle-channel-handler");
     tempDir.toFile().deleteOnExit();
 
-    generateMapOutput(tempDir.toAbsolutePath().toString(), TEST_ATTEMPT_1,
+    generateMapOutput(TEST_USER, tempDir.toAbsolutePath().toString(), TEST_ATTEMPT_1,
         Arrays.asList(TEST_DATA_A, TEST_DATA_B, TEST_DATA_C));
-    generateMapOutput(tempDir.toAbsolutePath().toString(), TEST_ATTEMPT_2,
+    generateMapOutput(TEST_USER, tempDir.toAbsolutePath().toString(), TEST_ATTEMPT_2,
         Arrays.asList(TEST_DATA_B, TEST_DATA_A, TEST_DATA_C));
-    generateMapOutput(tempDir.toAbsolutePath().toString(), TEST_ATTEMPT_3,
+    generateMapOutput(TEST_USER, tempDir.toAbsolutePath().toString(), TEST_ATTEMPT_3,
         Arrays.asList(TEST_DATA_C, TEST_DATA_B, TEST_DATA_A));
 
     outputStreamCaptor.reset();
@@ -82,8 +82,15 @@ public class TestShuffleHandlerBase {
     System.setOut(new PrintStream(outputStreamCaptor));
   }
 
-  @After
+  @AfterEach
   public void teardown() {
+    //Trigger GC so that we get the leak warnings early
+    System.gc();
+    try {
+      // Wait for logger to flush
+      Thread.sleep(1000);
+    } catch (InterruptedException e) {
+    }
     System.setOut(standardOut);
     System.out.print(outputStreamCaptor);
     // For this to work ch.qos.logback.classic is needed for some reason
@@ -101,12 +108,13 @@ public class TestShuffleHandlerBase {
     return allMatches;
   }
 
-  public static void generateMapOutput(String tempDir, String attempt, List<String> maps)
+  public static void generateMapOutput(String user, String tempDir,
+      String attempt, List<String> maps)
       throws IOException {
     SpillRecord record = new SpillRecord(maps.size());
 
-    assertTrue(new File(getBasePath(tempDir, attempt)).mkdirs());
-    try (PrintWriter writer = new PrintWriter(getDataFile(tempDir, attempt), "UTF-8")) {
+    assertTrue(new File(getBasePath(user, tempDir, attempt)).mkdirs());
+    try (PrintWriter writer = new PrintWriter(getDataFile(user, tempDir, attempt), "UTF-8")) {
       long startOffset = 0;
       int partition = 0;
       for (String map : maps) {
@@ -119,21 +127,21 @@ public class TestShuffleHandlerBase {
         partition++;
         writer.write(map);
       }
-      record.writeToFile(new Path(getIndexFile(tempDir, attempt)),
+      record.writeToFile(new Path(getIndexFile(user, tempDir, attempt)),
           new JobConf(new Configuration()));
     }
   }
 
-  public static String getIndexFile(String tempDir, String attempt) {
-    return String.format("%s/%s", getBasePath(tempDir, attempt), INDEX_FILE_NAME);
+  public static String getIndexFile(String user, String tempDir, String attempt) {
+    return String.format("%s/%s", getBasePath(user, tempDir, attempt), INDEX_FILE_NAME);
   }
 
-  public static String getDataFile(String tempDir, String attempt) {
-    return String.format("%s/%s", getBasePath(tempDir, attempt), DATA_FILE_NAME);
+  public static String getDataFile(String user, String tempDir, String attempt) {
+    return String.format("%s/%s", getBasePath(user, tempDir, attempt), DATA_FILE_NAME);
   }
 
-  private static String getBasePath(String tempDir, String attempt) {
-    return String.format("%s/%s/%s/%s", tempDir, TEST_JOB_ID, TEST_USER, attempt);
+  private static String getBasePath(String user, String tempDir, String attempt) {
+    return String.format("%s/%s/%s/%s", tempDir, TEST_JOB_ID, user, attempt);
   }
 
   public static String getUri(String jobId, int reduce, List<String> maps, boolean keepAlive) {

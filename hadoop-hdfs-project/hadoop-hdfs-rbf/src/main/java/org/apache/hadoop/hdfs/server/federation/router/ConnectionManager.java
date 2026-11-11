@@ -34,9 +34,9 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.server.federation.metrics.JSON;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.Time;
-import org.eclipse.jetty.util.ajax.JSON;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -97,6 +97,7 @@ public class ConnectionManager {
    * Creates a proxy client connection pool manager.
    *
    * @param config Configuration for the connections.
+   * @param routerStateIdContext Federated namespace context for router.
    */
   public ConnectionManager(Configuration config, RouterStateIdContext routerStateIdContext) {
     this.conf = config;
@@ -172,6 +173,11 @@ public class ConnectionManager {
     }
   }
 
+  @VisibleForTesting
+  public void closeConnectionCreator(){
+    this.creator.shutdown();
+  }
+
   /**
    * Fetches the next available proxy client in the pool. Each client connection
    * is reserved for a single user and cannot be reused until free.
@@ -228,7 +234,7 @@ public class ConnectionManager {
 
     // Add a new connection to the pool if it wasn't usable
     if (conn == null || !conn.isUsable()) {
-      if (!this.creatorQueue.offer(pool)) {
+      if (!this.creatorQueue.contains(pool) && !this.creatorQueue.offer(pool)) {
         LOG.error("Cannot add more than {} connections at the same time",
             this.creatorQueueMaxSize);
       }
@@ -355,7 +361,7 @@ public class ConnectionManager {
     } finally {
       readLock.unlock();
     }
-    return JSON.toString(info);
+    return JSON.getDefault().toJSON(info);
   }
 
   @VisibleForTesting
@@ -481,7 +487,7 @@ public class ConnectionManager {
                   pool.getMaxSize(), pool);
             }
           } catch (IOException e) {
-            LOG.error("Cannot create a new connection", e);
+            LOG.error("Cannot create a new connection for {} {}", pool, e);
           }
         } catch (InterruptedException e) {
           LOG.error("The connection creator was interrupted");

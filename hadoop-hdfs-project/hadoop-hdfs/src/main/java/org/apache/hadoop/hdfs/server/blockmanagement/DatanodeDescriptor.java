@@ -40,7 +40,6 @@ import org.apache.hadoop.hdfs.protocol.Block;
 import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.ExtendedBlock;
-import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.namenode.CachedBlock;
 import org.apache.hadoop.hdfs.server.protocol.BlockECReconstructionCommand.BlockECReconstructionInfo;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
@@ -108,7 +107,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
     }
 
     /**
-     * Returns <tt>true</tt> if the queue contains the specified element.
+     * Returns <code>true</code> if the queue contains the specified element.
      */
     synchronized boolean contains(E e) {
       return blockq.contains(e);
@@ -232,6 +231,9 @@ public class DatanodeDescriptor extends DatanodeInfo {
 
   // HB processing can use it to tell if it is the first HB since DN restarted
   private boolean heartbeatedSinceRegistration = false;
+
+  /** The number of volumes that can be written.*/
+  private int numVolumesAvailable = 0;
 
   /**
    * DatanodeDescriptor constructor
@@ -411,6 +413,7 @@ public class DatanodeDescriptor extends DatanodeInfo {
     long totalNonDfsUsed = 0;
     Set<String> visitedMount = new HashSet<>();
     Set<DatanodeStorageInfo> failedStorageInfos = null;
+    int volumesAvailable = 0;
 
     // Decide if we should check for any missing StorageReport and mark it as
     // failed. There are different scenarios.
@@ -489,7 +492,11 @@ public class DatanodeDescriptor extends DatanodeInfo {
           visitedMount.add(mount);
         }
       }
+      if (report.getRemaining() > 0 && storage.getState() != State.FAILED) {
+        volumesAvailable += 1;
+      }
     }
+    this.numVolumesAvailable = volumesAvailable;
 
     // Update total metrics for the node.
     setCapacity(totalCapacity);
@@ -804,11 +811,11 @@ public class DatanodeDescriptor extends DatanodeInfo {
    *
    * @param t requested storage type
    * @param blockSize requested block size
+   * @param minBlocksForWrite requested the minimum number of blocks
    */
   public DatanodeStorageInfo chooseStorage4Block(StorageType t,
-      long blockSize) {
-    final long requiredSize =
-        blockSize * HdfsServerConstants.MIN_BLOCKS_FOR_WRITE;
+      long blockSize, int minBlocksForWrite) {
+    final long requiredSize = blockSize * minBlocksForWrite;
     final long scheduledSize = blockSize * getBlocksScheduled(t);
     long remaining = 0;
     DatanodeStorageInfo storage = null;
@@ -979,6 +986,14 @@ public class DatanodeDescriptor extends DatanodeInfo {
    */
   public VolumeFailureSummary getVolumeFailureSummary() {
     return volumeFailureSummary;
+  }
+
+  /**
+   * Return the number of volumes that can be written.
+   * @return the number of volumes that can be written.
+   */
+  public int getNumVolumesAvailable() {
+    return numVolumesAvailable;
   }
 
   /**

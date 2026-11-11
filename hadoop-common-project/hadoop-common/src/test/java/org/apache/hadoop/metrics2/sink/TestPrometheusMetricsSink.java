@@ -35,23 +35,54 @@ import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.metrics2.lib.Interns;
 import org.apache.hadoop.metrics2.lib.MutableCounterLong;
 
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Test prometheus Sink.
  */
 public class TestPrometheusMetricsSink {
 
+  private static final Logger LOG =
+      LoggerFactory.getLogger(TestPrometheusMetricsSink.class);
+
+  /**
+   * Shared {@code DefaultMetricsSystem} singleton, set up fresh per test.
+   * Each test does exactly one balanced {@code init}/{@code shutdown} so the
+   * system (and the JVM-global source-name registry it owns) is fully reset
+   * between tests. This keeps tests isolated even when an assertion fails
+   * before the test body finishes, avoiding flaky failures such as
+   * "Metrics source TestMetrics already exists!" on later tests or reruns.
+   */
+  private MetricsSystem metrics;
+
+  @BeforeEach
+  public void setUp() {
+    metrics = DefaultMetricsSystem.instance();
+    metrics.init("test");
+  }
+
+  @AfterEach
+  public void tearDown() {
+    // DefaultMetricsSystem.shutdown() shuts down the underlying metrics system
+    // and, once its refCount reaches 0, clears the JVM-global source-name and
+    // MBean-name registries. Running it in @AfterEach guarantees cleanup even
+    // when a test assertion fails before reaching the end of the test body.
+    DefaultMetricsSystem.shutdown();
+  }
+
   @Test
   public void testPublish() throws IOException {
     //GIVEN
-    MetricsSystem metrics = DefaultMetricsSystem.instance();
-
-    metrics.init("test");
     PrometheusMetricsSink sink = new PrometheusMetricsSink();
     metrics.register("Prometheus", "Prometheus", sink);
     TestMetrics testMetrics = metrics
@@ -67,17 +98,10 @@ public class TestPrometheusMetricsSink {
     writer.flush();
 
     //THEN
-    String writtenMetrics = stream.toString(UTF_8.name());
-    System.out.println(writtenMetrics);
-    Assert.assertTrue(
-        "The expected metric line is missing from prometheus metrics output",
-        writtenMetrics.contains(
-            "test_metrics_num_bucket_create_fails{context=\"dfs\"")
-    );
-
-    metrics.unregisterSource("TestMetrics");
-    metrics.stop();
-    metrics.shutdown();
+    String writtenMetrics = stream.toString(UTF_8);
+    LOG.debug(writtenMetrics);
+    assertTrue(writtenMetrics.contains("test_metrics_num_bucket_create_fails{context=\"dfs\""),
+        "The expected metric line is missing from prometheus metrics output");
   }
 
   /**
@@ -87,9 +111,6 @@ public class TestPrometheusMetricsSink {
   @Test
   public void testPublishMultiple() throws IOException {
     //GIVEN
-    MetricsSystem metrics = DefaultMetricsSystem.instance();
-
-    metrics.init("test");
     PrometheusMetricsSink sink = new PrometheusMetricsSink();
     metrics.register("Prometheus", "Prometheus", sink);
     TestMetrics testMetrics1 = metrics
@@ -108,23 +129,14 @@ public class TestPrometheusMetricsSink {
     writer.flush();
 
     //THEN
-    String writtenMetrics = stream.toString(UTF_8.name());
-    System.out.println(writtenMetrics);
-    Assert.assertTrue(
-        "The expected first metric line is missing from prometheus metrics output",
-        writtenMetrics.contains(
-            "test_metrics_num_bucket_create_fails{context=\"dfs\",testtag=\"testTagValue1\"")
-    );
-    Assert.assertTrue(
-        "The expected second metric line is missing from prometheus metrics output",
-        writtenMetrics.contains(
-            "test_metrics_num_bucket_create_fails{context=\"dfs\",testtag=\"testTagValue2\"")
-    );
-
-    metrics.unregisterSource("TestMetrics1");
-    metrics.unregisterSource("TestMetrics2");
-    metrics.stop();
-    metrics.shutdown();
+    String writtenMetrics = stream.toString(UTF_8);
+    LOG.debug(writtenMetrics);
+    assertTrue(writtenMetrics.contains(
+        "test_metrics_num_bucket_create_fails{context=\"dfs\",testtag=\"testTagValue1\""),
+        "The expected first metric line is missing from prometheus metrics output");
+    assertTrue(writtenMetrics.contains(
+        "test_metrics_num_bucket_create_fails{context=\"dfs\",testtag=\"testTagValue2\""),
+        "The expected second metric line is missing from prometheus metrics output");
   }
 
   /**
@@ -133,9 +145,6 @@ public class TestPrometheusMetricsSink {
   @Test
   public void testPublishFlush() throws IOException {
     //GIVEN
-    MetricsSystem metrics = DefaultMetricsSystem.instance();
-
-    metrics.init("test");
     PrometheusMetricsSink sink = new PrometheusMetricsSink();
     metrics.register("Prometheus", "Prometheus", sink);
     TestMetrics testMetrics = metrics
@@ -159,35 +168,27 @@ public class TestPrometheusMetricsSink {
     writer.flush();
 
     //THEN
-    String writtenMetrics = stream.toString(UTF_8.name());
-    System.out.println(writtenMetrics);
-    Assert.assertFalse(
-        "The first metric should not exist after flushing",
-        writtenMetrics.contains(
-            "test_metrics_num_bucket_create_fails{context=\"dfs\",testtag=\"testTagValue1\"")
-    );
-    Assert.assertTrue(
-        "The expected metric line is missing from prometheus metrics output",
-        writtenMetrics.contains(
-            "test_metrics_num_bucket_create_fails{context=\"dfs\",testtag=\"testTagValue2\"")
-    );
-
-    metrics.unregisterSource("TestMetrics");
-    metrics.stop();
-    metrics.shutdown();
+    String writtenMetrics = stream.toString(UTF_8);
+    LOG.debug(writtenMetrics);
+    assertFalse(writtenMetrics.contains(
+        "test_metrics_num_bucket_create_fails{context=\"dfs\",testtag=\"testTagValue1\""),
+        "The first metric should not exist after flushing");
+    assertTrue(writtenMetrics.contains(
+        "test_metrics_num_bucket_create_fails{context=\"dfs\",testtag=\"testTagValue2\""),
+        "The expected metric line is missing from prometheus metrics output");
   }
 
   @Test
   public void testNamingCamelCase() {
     PrometheusMetricsSink sink = new PrometheusMetricsSink();
 
-    Assert.assertEquals("rpc_time_some_metrics",
+    assertEquals("rpc_time_some_metrics",
         sink.prometheusName("RpcTime", "SomeMetrics"));
 
-    Assert.assertEquals("om_rpc_time_om_info_keys",
+    assertEquals("om_rpc_time_om_info_keys",
         sink.prometheusName("OMRpcTime", "OMInfoKeys"));
 
-    Assert.assertEquals("rpc_time_small",
+    assertEquals("rpc_time_small",
         sink.prometheusName("RpcTime", "small"));
   }
 
@@ -198,7 +199,7 @@ public class TestPrometheusMetricsSink {
     String recordName = "SCMPipelineMetrics";
     String metricName = "NumBlocksAllocated-"
         + "RATIS-THREE-47659e3d-40c9-43b3-9792-4982fc279aba";
-    Assert.assertEquals(
+    assertEquals(
         "scm_pipeline_metrics_"
             + "num_blocks_allocated_"
             + "ratis_three_47659e3d_40c9_43b3_9792_4982fc279aba",
@@ -211,7 +212,7 @@ public class TestPrometheusMetricsSink {
 
     String recordName = "org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.FsDatasetImpl";
     String metricName = "DfsUsed";
-    Assert.assertEquals(
+    assertEquals(
         "org_apache_hadoop_hdfs_server_datanode_fsdataset_impl_fs_dataset_impl_dfs_used",
         sink.prometheusName(recordName, metricName));
   }
@@ -222,7 +223,7 @@ public class TestPrometheusMetricsSink {
 
     String recordName = "JvmMetrics";
     String metricName = "GcCount" + "G1 Old Generation";
-    Assert.assertEquals(
+    assertEquals(
         "jvm_metrics_gc_count_g1_old_generation",
         sink.prometheusName(recordName, metricName));
   }
@@ -232,10 +233,6 @@ public class TestPrometheusMetricsSink {
    */
   @Test
   public void testTopMetricsPublish() throws IOException {
-    MetricsSystem metrics = DefaultMetricsSystem.instance();
-
-    metrics.init("test");
-
     //GIVEN
     PrometheusMetricsSink sink = new PrometheusMetricsSink();
 
@@ -257,8 +254,8 @@ public class TestPrometheusMetricsSink {
     writer.flush();
 
     //THEN
-    String writtenMetrics = stream.toString(UTF_8.name());
-    System.out.println(writtenMetrics);
+    String writtenMetrics = stream.toString(UTF_8);
+    LOG.debug(writtenMetrics);
 
     assertThat(writtenMetrics)
         .contains(
@@ -269,9 +266,6 @@ public class TestPrometheusMetricsSink {
             "nn_top_user_op_counts_window_ms_1500000_count{")
         .contains(
             "op=\"rename\",user=\"hadoop/TEST_HOSTNAME.com@HOSTNAME.COM\"");
-
-    metrics.stop();
-    metrics.shutdown();
   }
 
   /**

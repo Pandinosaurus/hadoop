@@ -17,7 +17,9 @@
  */
 package org.apache.hadoop.hdfs.server.federation.metrics;
 
+import static org.apache.hadoop.hdfs.server.federation.router.async.utils.AsyncUtil.syncReturn;
 import static org.apache.hadoop.metrics2.impl.MsInfo.ProcessName;
+import static org.apache.hadoop.thirdparty.com.google.common.base.Strings.isNullOrEmpty;
 import static org.apache.hadoop.util.Time.now;
 
 import java.io.IOException;
@@ -25,6 +27,7 @@ import java.lang.reflect.Method;
 import java.math.BigInteger;
 import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.URI;
 import java.net.UnknownHostException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -52,6 +55,7 @@ import javax.management.StandardMBean;
 
 import org.apache.commons.math3.stat.descriptive.moment.StandardDeviation;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.hdfs.protocol.DatanodeInfo;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.server.federation.resolver.ActiveNamenodeResolver;
@@ -81,17 +85,19 @@ import org.apache.hadoop.hdfs.server.federation.store.records.MembershipStats;
 import org.apache.hadoop.hdfs.server.federation.store.records.MountTable;
 import org.apache.hadoop.hdfs.server.federation.store.records.RouterState;
 import org.apache.hadoop.hdfs.server.federation.store.records.StateStoreVersion;
+import org.apache.hadoop.hdfs.web.JsonUtil;
 import org.apache.hadoop.metrics2.MetricsSystem;
 import org.apache.hadoop.metrics2.annotation.Metric;
 import org.apache.hadoop.metrics2.annotation.Metrics;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.metrics2.lib.MetricsRegistry;
 import org.apache.hadoop.metrics2.util.MBeans;
+import org.apache.hadoop.metrics2.util.Metrics2Util;
+import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.VersionInfo;
 import org.codehaus.jettison.json.JSONObject;
-import org.eclipse.jetty.util.ajax.JSON;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -225,7 +231,7 @@ public class RBFMetrics implements RouterMBean, FederationMBean {
       // Order the namenodes
       final List<MembershipState> namenodes = response.getNamenodeMemberships();
       if (namenodes == null || namenodes.size() == 0) {
-        return JSON.toString(info);
+        return JSON.getDefault().toJSON(info);
       }
       List<MembershipState> namenodesOrder = new ArrayList<>(namenodes);
       Collections.sort(namenodesOrder, MembershipState.NAME_COMPARATOR);
@@ -249,7 +255,7 @@ public class RBFMetrics implements RouterMBean, FederationMBean {
           e.getMessage());
       return "{}";
     }
-    return JSON.toString(info);
+    return JSON.getDefault().toJSON(info);
   }
 
   @Override
@@ -278,7 +284,7 @@ public class RBFMetrics implements RouterMBean, FederationMBean {
       LOG.error("Cannot retrieve nameservices for JMX: {}", e.getMessage());
       return "{}";
     }
-    return JSON.toString(info);
+    return JSON.getDefault().toJSON(info);
   }
 
   @Override
@@ -331,7 +337,7 @@ public class RBFMetrics implements RouterMBean, FederationMBean {
           "Cannot generate JSON of mount table from store: {}", e.getMessage());
       return "[]";
     }
-    return JSON.toString(info);
+    return JSON.getDefault().toJSON(info);
   }
 
   @Override
@@ -340,6 +346,7 @@ public class RBFMetrics implements RouterMBean, FederationMBean {
     if (routerStore == null) {
       return "{}";
     }
+    Configuration conf = router.getConfig();
     try {
       // Get all the routers in order
       GetRouterRegistrationsRequest request =
@@ -358,6 +365,7 @@ public class RBFMetrics implements RouterMBean, FederationMBean {
         long dateModified = record.getDateModified();
         long lastHeartbeat = getSecondsSince(dateModified);
         innerInfo.put("lastHeartbeat", lastHeartbeat);
+        innerInfo.put("routerWebAddress", getRouterWebAddress(conf, record.getAdminAddress()));
 
         StateStoreVersion stateStoreVersion = record.getStateStoreVersion();
         if (stateStoreVersion == null) {
@@ -373,7 +381,38 @@ public class RBFMetrics implements RouterMBean, FederationMBean {
       LOG.error("Cannot get Routers JSON from the State Store", e);
       return "{}";
     }
-    return JSON.toString(info);
+    return JSON.getDefault().toJSON(info);
+  }
+
+  private static String getRouterWebAddress(Configuration conf, String adminAddress) {
+    try {
+      if (isNullOrEmpty(adminAddress)) {
+        return "";
+      }
+      String scheme = DFSUtil.getHttpClientScheme(conf);
+      int webPort = getRouterWebAddressPort(conf, scheme);
+      InetSocketAddress adminSocketAddress = NetUtils.createSocketAddr(adminAddress.trim());
+      return new URI(scheme, null, adminSocketAddress.getHostString(), webPort, null, null,
+          null).toString();
+    } catch (Exception e) {
+      LOG.error("Cannot get router web address", e);
+      return "";
+    }
+  }
+
+  private static int getRouterWebAddressPort(Configuration conf, String scheme) {
+    if ("http".equals(scheme)) {
+      return conf.getSocketAddr(
+          RBFConfigKeys.DFS_ROUTER_HTTP_BIND_HOST_KEY,
+          RBFConfigKeys.DFS_ROUTER_HTTP_ADDRESS_KEY,
+          RBFConfigKeys.DFS_ROUTER_HTTP_ADDRESS_DEFAULT,
+          RBFConfigKeys.DFS_ROUTER_HTTP_PORT_DEFAULT).getPort();
+    }
+    return conf.getSocketAddr(
+        RBFConfigKeys.DFS_ROUTER_HTTPS_BIND_HOST_KEY,
+        RBFConfigKeys.DFS_ROUTER_HTTPS_ADDRESS_KEY,
+        RBFConfigKeys.DFS_ROUTER_HTTPS_ADDRESS_DEFAULT,
+        RBFConfigKeys.DFS_ROUTER_HTTPS_PORT_DEFAULT).getPort();
   }
 
   /**
@@ -557,7 +596,12 @@ public class RBFMetrics implements RouterMBean, FederationMBean {
       DatanodeInfo[] live = null;
       if (this.enableGetDNUsage) {
         RouterRpcServer rpcServer = this.router.getRpcServer();
-        live = rpcServer.getDatanodeReport(DatanodeReportType.LIVE, false, timeOut);
+        if (rpcServer.isAsync()) {
+          rpcServer.getDatanodeReportAsync(DatanodeReportType.LIVE, false, timeOut);
+          live = syncReturn(DatanodeInfo[].class);
+        } else {
+          live = rpcServer.getDatanodeReport(DatanodeReportType.LIVE, false, timeOut);
+        }
       } else {
         LOG.debug("Getting node usage is disabled.");
       }
@@ -576,7 +620,7 @@ public class RBFMetrics implements RouterMBean, FederationMBean {
         StandardDeviation deviation = new StandardDeviation();
         dev = deviation.evaluate(usages);
       }
-    } catch (IOException e) {
+    } catch (Exception e) {
       LOG.error("Cannot get the live nodes: {}", e.getMessage());
     }
 
@@ -587,7 +631,7 @@ public class RBFMetrics implements RouterMBean, FederationMBean {
     innerInfo.put("stdDev", StringUtils.format("%.2f%%", dev));
     info.put("nodeUsage", innerInfo);
 
-    return JSON.toString(info);
+    return JSON.getDefault().toJSON(info);
   }
 
   @Override
@@ -712,13 +756,18 @@ public class RBFMetrics implements RouterMBean, FederationMBean {
 
   @Override
   public String getTopTokenRealOwners() {
-    RouterSecurityManager mgr =
-        this.router.getRpcServer().getRouterSecurityManager();
+    String topTokenRealOwnersString = "";
+    RouterSecurityManager mgr = this.router.getRpcServer().getRouterSecurityManager();
     if (mgr != null && mgr.getSecretManager() != null) {
-      return JSON.toString(mgr.getSecretManager()
-          .getTopTokenRealOwners(this.topTokenRealOwners));
+      try {
+        List<Metrics2Util.NameValuePair> topOwners = mgr.getSecretManager()
+                .getTopTokenRealOwners(this.topTokenRealOwners);
+        topTokenRealOwnersString = JsonUtil.toJsonString(topOwners);
+      } catch (Exception e) {
+        LOG.error("Unable to fetch the top token real owners as string {}", e.getMessage());
+      }
     }
-    return "";
+    return topTokenRealOwnersString;
   }
 
   @Override
@@ -747,6 +796,12 @@ public class RBFMetrics implements RouterMBean, FederationMBean {
   public long getHighestPriorityLowRedundancyReplicatedBlocks() {
     return getNameserviceAggregatedLong(
         MembershipStats::getHighestPriorityLowRedundancyReplicatedBlocks);
+  }
+
+  @Override
+  public long getNumberOfBadlyDistributedBlocks() {
+    return getNameserviceAggregatedLong(
+        MembershipStats::getNumberOfBadlyDistributedBlocks);
   }
 
   @Override
@@ -867,7 +922,7 @@ public class RBFMetrics implements RouterMBean, FederationMBean {
 
   /**
    * Fetches the most active namenode memberships for all known nameservices.
-   * The fetched membership may not or may not be active. Excludes expired
+   * The fetched membership may or may not be active. Excludes expired
    * memberships.
    * @throws IOException if the query could not be performed.
    * @return List of the most active NNs from each known nameservice.

@@ -18,25 +18,37 @@
 
 package org.apache.hadoop.net;
 
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.Inet6Address;
 import java.net.NetworkInterface;
 import java.net.SocketException;
 import java.net.UnknownHostException;
 import java.net.InetAddress;
+import java.util.Arrays;
 
 import javax.naming.CommunicationException;
 import javax.naming.NameNotFoundException;
+import javax.naming.NamingException;
 import javax.naming.ServiceUnavailableException;
 
 import org.apache.hadoop.util.Time;
 
-import org.assertj.core.api.Assertions;
-import org.junit.Assume;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.apache.hadoop.test.PlatformAssumptions.assumeNotWindows;
-import static org.junit.Assert.*;
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Test host name and IP resolution and caching.
@@ -77,9 +89,8 @@ public class TestDNS {
     assertEquals(hostname3, hostname2);
     assertEquals(hostname2, hostname1);
     long interval = t2 - t1;
-    assertTrue(
-        "Took too long to determine local host - caching is not working",
-        interval < 20000);
+    assertTrue(interval < 20000,
+        "Took too long to determine local host - caching is not working");
   }
 
   /**
@@ -103,7 +114,7 @@ public class TestDNS {
   @Test
   public void testNullInterface() throws Exception {
     String host = DNS.getDefaultHost(null);  // should work.
-    Assertions.assertThat(host).isEqualTo(DNS.getDefaultHost(DEFAULT));
+    assertThat(host).isEqualTo(DNS.getDefaultHost(DEFAULT));
     try {
       String ip = DNS.getDefaultIP(null);
       fail("Expected a NullPointerException, got " + ip);
@@ -119,7 +130,7 @@ public class TestDNS {
   @Test
   public void testNullDnsServer() throws Exception {
     String host = DNS.getDefaultHost(getLoopbackInterface(), null);
-    Assertions.assertThat(host)
+    assertThat(host)
         .isEqualTo(DNS.getDefaultHost(getLoopbackInterface()));
   }
 
@@ -130,7 +141,7 @@ public class TestDNS {
   @Test
   public void testDefaultDnsServer() throws Exception {
     String host = DNS.getDefaultHost(getLoopbackInterface(), DEFAULT);
-    Assertions.assertThat(host)
+    assertThat(host)
         .isEqualTo(DNS.getDefaultHost(getLoopbackInterface()));
   }
 
@@ -154,7 +165,7 @@ public class TestDNS {
   @Test
   public void testGetIPWithDefault() throws Exception {
     String[] ips = DNS.getIPs(DEFAULT);
-    assertEquals("Should only return 1 default IP", 1, ips.length);
+    assertEquals(1, ips.length, "Should only return 1 default IP");
     assertEquals(getLocalIPAddr().getHostAddress(), ips[0].toString());
     String ip = DNS.getDefaultIP(DEFAULT);
     assertEquals(ip, ips[0].toString());
@@ -178,7 +189,93 @@ public class TestDNS {
                 + " Loopback=" + localhost.isLoopbackAddress()
                 + " Linklocal=" + localhost.isLinkLocalAddress());
       }
-      Assume.assumeNoException(e);
+      assumeTrue(false, e.getMessage());
+    }
+  }
+
+  /**
+   * Test the reverse lookup names built for IPv4 and IPv6 addresses.
+   */
+  @Test
+  public void testReverseDnsName() throws Exception {
+    assertThat(DNS.getReverseDnsName(InetAddress.getByName("192.0.2.129")))
+        .isEqualTo("129.2.0.192.in-addr.arpa");
+    // The example from RFC 3596 section 2.5
+    assertThat(DNS.getReverseDnsName(InetAddress.getByName("4321:0:1:2:3:4:567:89ab")))
+        .isEqualTo("b.a.9.8.7.6.5.0.4.0.0.0.3.0.0.0.2.0.0.0.1.0.0.0.0.0.0.0.1.2.3.4.ip6.arpa");
+    assertThat(DNS.getReverseDnsName(InetAddress.getByName("2001:db8::1")))
+        .isEqualTo("1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.ip6.arpa");
+    assertThat(DNS.getReverseDnsName(InetAddress.getByName("::1")))
+        .isEqualTo("1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.ip6.arpa");
+    // The JDK resolves an IPv4-mapped address to an Inet4Address
+    assertThat(DNS.getReverseDnsName(InetAddress.getByName("::ffff:192.0.2.129")))
+        .isEqualTo("129.2.0.192.in-addr.arpa");
+    // The scope id is not part of the name
+    byte[] linkLocal = InetAddress.getByName("fe80::1").getAddress();
+    assertThat(DNS.getReverseDnsName(Inet6Address.getByAddress(null, linkLocal, 5)))
+        .isEqualTo("1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.e.f.ip6.arpa");
+  }
+
+  /**
+   * Test that the reverse lookup of an IPv6 address fails with a
+   * NamingException, which DNS#getHosts handles, when no DNS server answers.
+   */
+  @Test
+  public void testReverseDnsIPv6WithInvalidServer() throws Exception {
+    InetAddress address = InetAddress.getByName("2001:db8::1");
+    assertThatThrownBy(() -> DNS.reverseDns(address, INVALID_DNS_SERVER))
+        .isInstanceOf(NamingException.class);
+  }
+
+  /**
+   * Test that the reverse lookup fails with a NamingException, which the
+   * callers handle, when the DNS server answers without a PTR record.
+   */
+  @Test
+  public void testReverseDnsWithoutPtrRecord() throws Exception {
+    try (DatagramSocket server = new DatagramSocket(0, InetAddress.getByName("127.0.0.1"))) {
+      Thread responder = new Thread(() -> answerWithoutRecords(server));
+      responder.setDaemon(true);
+      responder.start();
+      String ns = "127.0.0.1:" + server.getLocalPort();
+      for (String ip : new String[] {"192.0.2.1", "2001:db8::1"}) {
+        assertThatThrownBy(() -> DNS.reverseDns(InetAddress.getByName(ip), ns))
+            .isInstanceOf(NameNotFoundException.class)
+            .hasMessageContaining("No PTR record");
+      }
+    }
+  }
+
+  /**
+   * Answers every DNS query with NOERROR and no records, until the socket
+   * is closed.
+   */
+  private static void answerWithoutRecords(DatagramSocket server) {
+    byte[] buf = new byte[512];
+    try {
+      while (true) {
+        DatagramPacket query = new DatagramPacket(buf, buf.length);
+        server.receive(query);
+        // Keep the header and the question, drop anything after the question.
+        int length = query.getLength();
+        int end = 12;
+        while (end < length && buf[end] != 0) {
+          end += (buf[end] & 0xff) + 1;
+        }
+        end += 5; // the root label, QTYPE and QCLASS
+        if (end > length) {
+          continue; // not a well formed query
+        }
+        byte[] answer = Arrays.copyOf(buf, end);
+        answer[2] = (byte) 0x81; // QR and RD
+        answer[3] = (byte) 0x80; // RA, RCODE 0
+        Arrays.fill(answer, 6, 12, (byte) 0); // no answer, authority or additional records
+        server.send(new DatagramPacket(answer, end, query.getSocketAddress()));
+      }
+    } catch (IOException e) {
+      if (!server.isClosed()) {
+        throw new UncheckedIOException(e);
+      }
     }
   }
 
@@ -196,7 +293,8 @@ public class TestDNS {
    *
    * @throws Exception
    */
-  @Test (timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testLookupWithHostsFallback() throws Exception {
     assumeNotWindows();
     final String oldHostname = DNS.getCachedHostname();
@@ -206,7 +304,7 @@ public class TestDNS {
           getLoopbackInterface(), INVALID_DNS_SERVER, true);
 
       // Expect to get back something other than the cached host name.
-      Assertions.assertThat(hostname).isNotEqualTo(DUMMY_HOSTNAME);
+      assertThat(hostname).isNotEqualTo(DUMMY_HOSTNAME);
     } finally {
       // Restore DNS#cachedHostname for subsequent tests.
       DNS.setCachedHostname(oldHostname);
@@ -219,7 +317,8 @@ public class TestDNS {
    *
    * @throws Exception
    */
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testLookupWithoutHostsFallback() throws Exception {
     final String oldHostname = DNS.getCachedHostname();
     try {
@@ -229,7 +328,7 @@ public class TestDNS {
 
       // Expect to get back the cached host name since there was no hosts
       // file lookup.
-      Assertions.assertThat(hostname).isEqualTo(DUMMY_HOSTNAME);
+      assertThat(hostname).isEqualTo(DUMMY_HOSTNAME);
     } finally {
       // Restore DNS#cachedHostname for subsequent tests.
       DNS.setCachedHostname(oldHostname);
@@ -249,7 +348,7 @@ public class TestDNS {
   @Test
   public void testLocalhostResolves() throws Exception {
     InetAddress localhost = InetAddress.getByName("localhost");
-    assertNotNull("localhost is null", localhost);
+    assertNotNull(localhost, "localhost is null");
     LOG.info("Localhost IPAddr is " + localhost.toString());
   }
 }

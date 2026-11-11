@@ -18,10 +18,10 @@
 package org.apache.hadoop.hdfs.server.datanode;
 
 import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.hdfs.DFSUtil;
 import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.thirdparty.protobuf.ByteString;
 import javax.crypto.SecretKey;
-import org.apache.commons.logging.Log;
 import org.apache.hadoop.fs.FsTracer;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.hdfs.DFSUtilClient;
@@ -36,6 +36,7 @@ import org.apache.hadoop.hdfs.protocol.datatransfer.BlockConstructionStage;
 import org.apache.hadoop.hdfs.protocol.datatransfer.BlockPinningException;
 import org.apache.hadoop.hdfs.protocol.datatransfer.DataTransferProtoUtil;
 import org.apache.hadoop.hdfs.protocol.datatransfer.IOStreamPair;
+import org.apache.hadoop.hdfs.protocol.datatransfer.InvalidEncryptionKeyException;
 import org.apache.hadoop.hdfs.protocol.datatransfer.Op;
 import org.apache.hadoop.hdfs.protocol.datatransfer.Receiver;
 import org.apache.hadoop.hdfs.protocol.datatransfer.Sender;
@@ -105,7 +106,7 @@ import static org.apache.hadoop.util.Time.monotonicNow;
  */
 class DataXceiver extends Receiver implements Runnable {
   public static final Logger LOG = DataNode.LOG;
-  static final Log ClientTraceLog = DataNode.ClientTraceLog;
+  static final Logger CLIENT_TRACE_LOG = DataNode.CLIENT_TRACE_LOG;
   
   private Peer peer;
   private final String remoteAddress; // address of remote side
@@ -186,8 +187,8 @@ class DataXceiver extends Receiver implements Runnable {
     if (br == null) {
       return;
     }
-    // This doesn't need to be in a critical section. Althogh the client
-    // can resue the connection to issue a different request, trying sending
+    // This doesn't need to be in a critical section. Although the client
+    // can reuse the connection to issue a different request, trying sending
     // an OOB through the recently closed block receiver is harmless.
     LOG.info("Sending OOB to peer: {}", peer);
     br.sendOOB();
@@ -223,6 +224,7 @@ class DataXceiver extends Receiver implements Runnable {
   public void run() {
     int opsProcessed = 0;
     Op op = null;
+    Op firstOp = null;
 
     try {
       synchronized(this) {
@@ -290,6 +292,11 @@ class DataXceiver extends Receiver implements Runnable {
         }
 
         opStartTime = monotonicNow();
+        // compatible with loop retry requests
+        if (firstOp == null) {
+          firstOp = op;
+          incrReadWriteOpMetrics(op);
+        }
         processOp(op);
         ++opsProcessed;
       } while ((peer != null) &&
@@ -297,7 +304,9 @@ class DataXceiver extends Receiver implements Runnable {
     } catch (Throwable t) {
       String s = datanode.getDisplayName() + ":DataXceiver error processing "
           + ((op == null) ? "unknown" : op.name()) + " operation "
-          + " src: " + remoteAddress + " dst: " + localAddress;
+          + " src: " + remoteAddress + " dst: " + localAddress
+          + (previousOpClientName != null
+              ? " clientName: " + previousOpClientName : "");
       if (op == Op.WRITE_BLOCK && t instanceof ReplicaAlreadyExistsException) {
         // For WRITE_BLOCK, it is okay if the replica already exists since
         // client and replication may write the same block to the same datanode
@@ -330,6 +339,9 @@ class DataXceiver extends Receiver implements Runnable {
           datanode.getDisplayName(), datanode.getXceiverCount());
       updateCurrentThreadName("Cleaning up");
       if (peer != null) {
+        if (firstOp != null) {
+          decrReadWriteOpMetrics(op);
+        }
         dataXceiverServer.closePeer(peer);
         IOUtils.closeStream(in);
       }
@@ -426,10 +438,10 @@ class DataXceiver extends Receiver implements Runnable {
             registeredSlotId);
         datanode.shortCircuitRegistry.unregisterSlot(registeredSlotId);
       }
-      if (ClientTraceLog.isInfoEnabled()) {
+      if (CLIENT_TRACE_LOG.isInfoEnabled()) {
         DatanodeRegistration dnR = datanode.getDNRegistrationForBP(blk
             .getBlockPoolId());
-        BlockSender.ClientTraceLog.info(String.format(
+        BlockSender.CLIENT_TRACE_LOG.info(String.format(
             "src: 127.0.0.1, dest: 127.0.0.1, op: REQUEST_SHORT_CIRCUIT_FDS," +
             " blockid: %s, srvID: %s, success: %b",
             blk.getBlockId(), dnR.getDatanodeUuid(), success));
@@ -466,8 +478,8 @@ class DataXceiver extends Receiver implements Runnable {
       bld.build().writeDelimitedTo(socketOut);
       success = true;
     } finally {
-      if (ClientTraceLog.isInfoEnabled()) {
-        BlockSender.ClientTraceLog.info(String.format(
+      if (CLIENT_TRACE_LOG.isInfoEnabled()) {
+        BlockSender.CLIENT_TRACE_LOG.info(String.format(
             "src: 127.0.0.1, dest: 127.0.0.1, op: RELEASE_SHORT_CIRCUIT_FDS," +
             " shmId: %016x%016x, slotIdx: %d, srvID: %s, success: %b",
             slotId.getShmId().getHi(), slotId.getShmId().getLo(),
@@ -526,9 +538,9 @@ class DataXceiver extends Receiver implements Runnable {
       sendShmSuccessResponse(sock, shmInfo);
       success = true;
     } finally {
-      if (ClientTraceLog.isInfoEnabled()) {
+      if (CLIENT_TRACE_LOG.isInfoEnabled()) {
         if (success) {
-          BlockSender.ClientTraceLog.info(String.format(
+          BlockSender.CLIENT_TRACE_LOG.info(String.format(
               "cliID: %s, src: 127.0.0.1, dest: 127.0.0.1, " +
               "op: REQUEST_SHORT_CIRCUIT_SHM," +
               " shmId: %016x%016x, srvID: %s, success: true",
@@ -536,7 +548,7 @@ class DataXceiver extends Receiver implements Runnable {
               shmInfo.getShmId().getLo(),
               datanode.getDatanodeUuid()));
         } else {
-          BlockSender.ClientTraceLog.info(String.format(
+          BlockSender.CLIENT_TRACE_LOG.info(String.format(
               "cliID: %s, src: 127.0.0.1, dest: 127.0.0.1, " +
               "op: REQUEST_SHORT_CIRCUIT_SHM, " +
               "shmId: n/a, srvID: %s, success: false",
@@ -587,13 +599,10 @@ class DataXceiver extends Receiver implements Runnable {
     BlockSender blockSender = null;
     DatanodeRegistration dnR = 
       datanode.getDNRegistrationForBP(block.getBlockPoolId());
-    final String clientTraceFmt =
-      clientName.length() > 0 && ClientTraceLog.isInfoEnabled()
-        ? String.format(DN_CLIENTTRACE_FORMAT, localAddress, remoteAddress,
-            "", "%d", "HDFS_READ", clientName, "%d",
-            dnR.getDatanodeUuid(), block, "%d")
-        : dnR + " Served block " + block + " to " +
-            remoteAddress;
+    final String clientTraceFmt = clientName.length() > 0 && CLIENT_TRACE_LOG.isInfoEnabled() ?
+        String.format(DN_CLIENTTRACE_FORMAT, localAddress, remoteAddress, "", "%d", "HDFS_READ",
+            clientName, "%d", dnR.getDatanodeUuid(), block, "%d") :
+        dnR + " Served block " + block + " to " + remoteAddress;
 
     try {
       try {
@@ -610,9 +619,10 @@ class DataXceiver extends Receiver implements Runnable {
       // send op status
       writeSuccessWithChecksumInfo(blockSender, new DataOutputStream(getOutputStream()));
 
-      long beginRead = Time.monotonicNow();
-      read = blockSender.sendBlock(out, baseStream, null); // send data
-      long duration = Time.monotonicNow() - beginRead;
+      long beginReadInNS = Time.monotonicNowNanos();
+      // send data
+      read = blockSender.sendBlock(out, baseStream, dataXceiverServer.getReadThrottler());
+      long durationInNS = Time.monotonicNowNanos() - beginReadInNS;
       if (blockSender.didSendEntireByteRange()) {
         // If we sent the entire range, then we should expect the client
         // to respond with a Status enum.
@@ -635,10 +645,11 @@ class DataXceiver extends Receiver implements Runnable {
       }
       datanode.metrics.incrBytesRead((int) read);
       datanode.metrics.incrBlocksRead();
-      datanode.metrics.incrTotalReadTime(duration);
+      datanode.metrics.incrTotalReadTime(TimeUnit.NANOSECONDS.toMillis(durationInNS));
+      DFSUtil.addTransferRateMetric(datanode.metrics, read, durationInNS);
     } catch ( SocketException ignored ) {
-      LOG.trace("{}:Ignoring exception while serving {} to {}",
-          dnR, block, remoteAddress, ignored);
+      LOG.trace("{}:Ignoring exception while serving {} to {} for client {}",
+          dnR, block, remoteAddress, clientName, ignored);
       // Its ok for remote side to close the connection anytime.
       datanode.metrics.incrBlocksRead();
       IOUtils.closeStream(out);
@@ -647,8 +658,8 @@ class DataXceiver extends Receiver implements Runnable {
        * Earlier version shutdown() datanode if there is disk error.
        */
       if (!(ioe instanceof SocketTimeoutException)) {
-        LOG.warn("{}:Got exception while serving {} to {}",
-            dnR, block, remoteAddress, ioe);
+        LOG.warn("{}:Got exception while serving {} to {} for client {}",
+            dnR, block, remoteAddress, clientName, ioe);
         incrDatanodeNetworkErrors();
       }
       // Normally the client reports a bad block to the NN. However if the
@@ -787,7 +798,6 @@ class DataXceiver extends Receiver implements Runnable {
         mirrorNode = targets[0].getXferAddr(connectToDnViaHostname);
         LOG.debug("Connecting to datanode {}", mirrorNode);
         mirrorTarget = NetUtils.createSocketAddr(mirrorNode);
-        mirrorSock = datanode.newSocket();
         try {
 
           DataNodeFaultInjector.get().failMirrorConnection();
@@ -796,32 +806,52 @@ class DataXceiver extends Receiver implements Runnable {
               (HdfsConstants.READ_TIMEOUT_EXTENSION * targets.length);
           int writeTimeout = dnConf.socketWriteTimeout +
               (HdfsConstants.WRITE_TIMEOUT_EXTENSION * targets.length);
-          NetUtils.connect(mirrorSock, mirrorTarget, timeoutValue);
-          mirrorSock.setTcpNoDelay(dnConf.getDataTransferServerTcpNoDelay());
-          mirrorSock.setSoTimeout(timeoutValue);
-          mirrorSock.setKeepAlive(true);
-          if (dnConf.getTransferSocketSendBufferSize() > 0) {
-            mirrorSock.setSendBufferSize(
-                dnConf.getTransferSocketSendBufferSize());
-          }
-
-          OutputStream unbufMirrorOut = NetUtils.getOutputStream(mirrorSock,
-              writeTimeout);
-          InputStream unbufMirrorIn = NetUtils.getInputStream(mirrorSock);
           DataEncryptionKeyFactory keyFactory =
             datanode.getDataEncryptionKeyFactoryForBlock(block);
-          SecretKey secretKey = null;
-          if (dnConf.overwriteDownstreamDerivedQOP) {
-            String bpid = block.getBlockPoolId();
-            BlockKey blockKey = datanode.blockPoolTokenSecretManager
-                .get(bpid).getCurrentKey();
-            secretKey = blockKey.getKey();
+          OutputStream unbufMirrorOut;
+          InputStream unbufMirrorIn;
+          int encryptionKeyRetryCount = 0;
+          while (true) {
+            try {
+              mirrorSock = datanode.newSocket();
+              NetUtils.connect(mirrorSock, mirrorTarget, timeoutValue);
+              mirrorSock.setTcpNoDelay(
+                  dnConf.getDataTransferServerTcpNoDelay());
+              mirrorSock.setSoTimeout(timeoutValue);
+              mirrorSock.setKeepAlive(true);
+              if (dnConf.getTransferSocketSendBufferSize() > 0) {
+                mirrorSock.setSendBufferSize(
+                    dnConf.getTransferSocketSendBufferSize());
+              }
+
+              unbufMirrorOut = NetUtils.getOutputStream(mirrorSock,
+                  writeTimeout);
+              unbufMirrorIn = NetUtils.getInputStream(mirrorSock);
+              SecretKey secretKey = null;
+              if (dnConf.overwriteDownstreamDerivedQOP) {
+                String bpid = block.getBlockPoolId();
+                BlockKey blockKey = datanode.blockPoolTokenSecretManager
+                    .get(bpid).getCurrentKey();
+                secretKey = blockKey.getKey();
+              }
+              IOStreamPair saslStreams = datanode.saslClient.socketSend(
+                  mirrorSock, unbufMirrorOut, unbufMirrorIn, keyFactory,
+                  blockToken, targets[0], secretKey);
+              unbufMirrorOut = saslStreams.out;
+              unbufMirrorIn = saslStreams.in;
+              break;
+            } catch (InvalidEncryptionKeyException e) {
+              IOUtils.closeSocket(mirrorSock);
+              mirrorSock = null;
+              if (!prepareRetryAfterInvalidEncryptionKey(keyFactory,
+                  ++encryptionKeyRetryCount)) {
+                throw e;
+              }
+              LOG.info("Retrying connection to mirror {} for block {} after "
+                      + "InvalidEncryptionKeyException",
+                  targets[0], block, e);
+            }
           }
-          IOStreamPair saslStreams = datanode.saslClient.socketSend(
-              mirrorSock, unbufMirrorOut, unbufMirrorIn, keyFactory,
-              blockToken, targets[0], secretKey);
-          unbufMirrorOut = saslStreams.out;
-          unbufMirrorIn = saslStreams.in;
           mirrorOut = new DataOutputStream(new BufferedOutputStream(unbufMirrorOut,
               smallBufferSize));
           mirrorIn = new DataInputStream(unbufMirrorIn);
@@ -941,8 +971,8 @@ class DataXceiver extends Receiver implements Runnable {
         size = block.getNumBytes();
       }
     } catch (IOException ioe) {
-      LOG.info("opWriteBlock {} received exception {}",
-          block, ioe.toString());
+      LOG.info("opWriteBlock {} received exception {} from client {}",
+          block, ioe.toString(), clientname);
       incrDatanodeNetworkErrors();
       throw ioe;
     } finally {
@@ -983,8 +1013,8 @@ class DataXceiver extends Receiver implements Runnable {
           targetStorageTypes, targetStorageIds, clientName);
       writeResponse(Status.SUCCESS, null, out);
     } catch (IOException ioe) {
-      LOG.info("transferBlock {} received exception {}",
-          blk, ioe.toString());
+      LOG.info("transferBlock {} received exception {} from client {}",
+          blk, ioe.toString(), clientName);
       incrDatanodeNetworkErrors();
       throw ioe;
     } finally {
@@ -1118,14 +1148,15 @@ class DataXceiver extends Receiver implements Runnable {
       // send status first
       writeSuccessWithChecksumInfo(blockSender, reply);
 
-      long beginRead = Time.monotonicNow();
+      long beginReadInNS = Time.monotonicNowNanos();
       // send block content to the target
       long read = blockSender.sendBlock(reply, baseStream,
                                         dataXceiverServer.balanceThrottler);
-      long duration = Time.monotonicNow() - beginRead;
+      long durationInNS = Time.monotonicNowNanos() - beginReadInNS;
       datanode.metrics.incrBytesRead((int) read);
       datanode.metrics.incrBlocksRead();
-      datanode.metrics.incrTotalReadTime(duration);
+      datanode.metrics.incrTotalReadTime(TimeUnit.NANOSECONDS.toMillis(durationInNS));
+      DFSUtil.addTransferRateMetric(datanode.metrics, read, durationInNS);
       
       LOG.info("Copied {} to {}", block, peer.getRemoteAddressString());
     } catch (IOException ioe) {
@@ -1200,21 +1231,40 @@ class DataXceiver extends Receiver implements Runnable {
         final String dnAddr = proxySource.getXferAddr(connectToDnViaHostname);
         LOG.debug("Connecting to datanode {}", dnAddr);
         InetSocketAddress proxyAddr = NetUtils.createSocketAddr(dnAddr);
-        proxySock = datanode.newSocket();
-        NetUtils.connect(proxySock, proxyAddr, dnConf.socketTimeout);
-        proxySock.setTcpNoDelay(dnConf.getDataTransferServerTcpNoDelay());
-        proxySock.setSoTimeout(dnConf.socketTimeout);
-        proxySock.setKeepAlive(true);
-
-        OutputStream unbufProxyOut = NetUtils.getOutputStream(proxySock,
-            dnConf.socketWriteTimeout);
-        InputStream unbufProxyIn = NetUtils.getInputStream(proxySock);
         DataEncryptionKeyFactory keyFactory =
             datanode.getDataEncryptionKeyFactoryForBlock(block);
-        IOStreamPair saslStreams = datanode.saslClient.socketSend(proxySock,
-            unbufProxyOut, unbufProxyIn, keyFactory, blockToken, proxySource);
-        unbufProxyOut = saslStreams.out;
-        unbufProxyIn = saslStreams.in;
+        OutputStream unbufProxyOut;
+        InputStream unbufProxyIn;
+        int encryptionKeyRetryCount = 0;
+        while (true) {
+          try {
+            proxySock = datanode.newSocket();
+            NetUtils.connect(proxySock, proxyAddr, dnConf.socketTimeout);
+            proxySock.setTcpNoDelay(dnConf.getDataTransferServerTcpNoDelay());
+            proxySock.setSoTimeout(dnConf.socketTimeout);
+            proxySock.setKeepAlive(true);
+
+            unbufProxyOut = NetUtils.getOutputStream(proxySock,
+                dnConf.socketWriteTimeout);
+            unbufProxyIn = NetUtils.getInputStream(proxySock);
+            IOStreamPair saslStreams = datanode.saslClient.socketSend(
+                proxySock, unbufProxyOut, unbufProxyIn, keyFactory, blockToken,
+                proxySource);
+            unbufProxyOut = saslStreams.out;
+            unbufProxyIn = saslStreams.in;
+            break;
+          } catch (InvalidEncryptionKeyException e) {
+            IOUtils.closeSocket(proxySock);
+            proxySock = null;
+            if (!prepareRetryAfterInvalidEncryptionKey(keyFactory,
+                ++encryptionKeyRetryCount)) {
+              throw e;
+            }
+            LOG.info("Retrying connection to proxy {} for block {} after "
+                    + "InvalidEncryptionKeyException",
+                proxySource, block, e);
+          }
+        }
         
         proxyOut = new DataOutputStream(new BufferedOutputStream(unbufProxyOut,
             smallBufferSize));
@@ -1300,6 +1350,15 @@ class DataXceiver extends Receiver implements Runnable {
 
     //update metrics
     datanode.metrics.addReplaceBlockOp(elapsed());
+  }
+
+  private static boolean prepareRetryAfterInvalidEncryptionKey(
+      DataEncryptionKeyFactory keyFactory, int retryCount) {
+    if (retryCount > 1) {
+      return false;
+    }
+    keyFactory.clearDataEncryptionKey();
+    return true;
   }
 
 
@@ -1464,6 +1523,22 @@ class DataXceiver extends Receiver implements Runnable {
           IOUtils.closeStream(out);
         }
       }
+    }
+  }
+
+  private void incrReadWriteOpMetrics(Op op) {
+    if (Op.READ_BLOCK.equals(op)) {
+      datanode.getMetrics().incrDataNodeReadActiveXceiversCount();
+    } else if (Op.WRITE_BLOCK.equals(op)) {
+      datanode.getMetrics().incrDataNodeWriteActiveXceiversCount();
+    }
+  }
+
+  private void decrReadWriteOpMetrics(Op op) {
+    if (Op.READ_BLOCK.equals(op)) {
+      datanode.getMetrics().decrDataNodeReadActiveXceiversCount();
+    } else if (Op.WRITE_BLOCK.equals(op)) {
+      datanode.getMetrics().decrDataNodeWriteActiveXceiversCount();
     }
   }
 }

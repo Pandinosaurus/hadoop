@@ -27,17 +27,23 @@ import org.slf4j.LoggerFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CanSetReadahead;
 import org.apache.hadoop.fs.FSExceptionMessages;
-import org.apache.hadoop.fs.FSInputStream;
+import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.fs.StreamCapabilities;
 import org.apache.hadoop.fs.impl.prefetch.Validate;
-import org.apache.hadoop.fs.s3a.S3AInputStream;
 import org.apache.hadoop.fs.s3a.S3AReadOpContext;
 import org.apache.hadoop.fs.s3a.S3ObjectAttributes;
+import org.apache.hadoop.fs.s3a.impl.streams.InputStreamType;
+import org.apache.hadoop.fs.s3a.impl.streams.ObjectInputStream;
+import org.apache.hadoop.fs.s3a.impl.streams.ObjectReadParameters;
 import org.apache.hadoop.fs.s3a.statistics.S3AInputStreamStatistics;
+import org.apache.hadoop.fs.s3a.impl.streams.ObjectInputStreamCallbacks;
 import org.apache.hadoop.fs.statistics.IOStatistics;
 import org.apache.hadoop.fs.statistics.IOStatisticsSource;
+
+import static org.apache.hadoop.util.StringUtils.toLowerCase;
 
 /**
  * Enhanced {@code InputStream} for reading from S3.
@@ -46,7 +52,7 @@ import org.apache.hadoop.fs.statistics.IOStatisticsSource;
  * blocks of configurable size from the underlying S3 file.
  */
 public class S3APrefetchingInputStream
-    extends FSInputStream
+    extends ObjectInputStream
     implements CanSetReadahead, StreamCapabilities, IOStatisticsSource {
 
   private static final Logger LOG = LoggerFactory.getLogger(
@@ -72,23 +78,24 @@ public class S3APrefetchingInputStream
    */
   private S3AInputStreamStatistics inputStreamStatistics = null;
 
+
   /**
    * Initializes a new instance of the {@code S3APrefetchingInputStream} class.
-   *
-   * @param context read-specific operation context.
-   * @param s3Attributes attributes of the S3 object being read.
-   * @param client callbacks used for interacting with the underlying S3 client.
-   * @param streamStatistics statistics for this stream.
-   *
-   * @throws IllegalArgumentException if context is null.
-   * @throws IllegalArgumentException if s3Attributes is null.
-   * @throws IllegalArgumentException if client is null.
+   * @param parameters creation parameters.
+   * @param conf the configuration.
+   * @param prefetchOptions prefetch stream specific options
+   * @throws NullPointerException if a required parameter is null.
    */
   public S3APrefetchingInputStream(
-      S3AReadOpContext context,
-      S3ObjectAttributes s3Attributes,
-      S3AInputStream.InputStreamCallbacks client,
-      S3AInputStreamStatistics streamStatistics) {
+      final ObjectReadParameters parameters,
+      final Configuration conf,
+      final PrefetchOptions prefetchOptions) {
+    super(InputStreamType.Prefetch, parameters);
+    S3ObjectAttributes s3Attributes = parameters.getObjectAttributes();
+    ObjectInputStreamCallbacks client = parameters.getCallbacks();
+    S3AInputStreamStatistics streamStatistics = parameters.getStreamStatistics();
+    final S3AReadOpContext context = parameters.getContext();
+    LocalDirAllocator localDirAllocator = parameters.getDirectoryAllocator();
 
     Validate.checkNotNull(context, "context");
     Validate.checkNotNull(s3Attributes, "s3Attributes");
@@ -101,10 +108,11 @@ public class S3APrefetchingInputStream
     Validate.checkNotNull(streamStatistics, "streamStatistics");
 
     long fileSize = s3Attributes.getLen();
-    if (fileSize <= context.getPrefetchBlockSize()) {
+    if (fileSize <= prefetchOptions.getPrefetchBlockSize()) {
       LOG.debug("Creating in memory input stream for {}", context.getPath());
       this.inputStream = new S3AInMemoryInputStream(
           context,
+          prefetchOptions,
           s3Attributes,
           client,
           streamStatistics);
@@ -112,9 +120,12 @@ public class S3APrefetchingInputStream
       LOG.debug("Creating in caching input stream for {}", context.getPath());
       this.inputStream = new S3ACachingInputStream(
           context,
+          prefetchOptions,
           s3Attributes,
           client,
-          streamStatistics);
+          streamStatistics,
+          conf,
+          localDirAllocator);
     }
   }
 
@@ -191,6 +202,22 @@ public class S3APrefetchingInputStream
     }
   }
 
+
+  @Override
+  protected boolean isStreamOpen() {
+    return !isClosed();
+  }
+
+  @Override
+  protected void abortInFinalizer() {
+    getS3AStreamStatistics().streamLeaked();
+    try {
+      close();
+    } catch (IOException ignored) {
+
+    }
+  }
+
   /**
    * Updates internal data such that the next read will take place at the given {@code pos}.
    *
@@ -223,11 +250,12 @@ public class S3APrefetchingInputStream
    */
   @Override
   public boolean hasCapability(String capability) {
-    if (!isClosed()) {
-      return inputStream.hasCapability(capability);
+    switch (toLowerCase(capability)) {
+    case StreamCapabilities.READAHEAD:
+      return true;
+    default:
+      return super.hasCapability(capability);
     }
-
-    return false;
   }
 
   /**

@@ -18,6 +18,7 @@
 
 package org.apache.hadoop.yarn.server.federation.store.records;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import org.apache.commons.lang3.builder.EqualsBuilder;
 import org.apache.commons.lang3.builder.HashCodeBuilder;
 import org.apache.hadoop.classification.InterfaceAudience;
@@ -55,6 +56,7 @@ public class SubClusterIdInfo {
    * Get the sub-cluster identifier as {@link SubClusterId}.
    * @return the sub-cluster id.
    */
+  @JsonProperty("id")
   public SubClusterId toId() {
     return SubClusterId.newInstance(id);
   }
@@ -83,5 +85,10 @@ public class SubClusterIdInfo {
   @Override
   public int hashCode() {
     return new HashCodeBuilder().append(this.id).toHashCode();
+  }
+
+  @Override
+  public String toString() {
+    return id;
   }
 }

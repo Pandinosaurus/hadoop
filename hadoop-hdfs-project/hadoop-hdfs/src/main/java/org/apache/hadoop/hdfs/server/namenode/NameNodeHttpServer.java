@@ -39,22 +39,32 @@ import org.apache.hadoop.hdfs.server.common.JspHelper;
 import org.apache.hadoop.hdfs.server.common.TokenVerifier;
 import org.apache.hadoop.hdfs.server.namenode.startupprogress.StartupProgress;
 import org.apache.hadoop.hdfs.server.namenode.web.resources.NamenodeWebHdfsMethods;
+import org.apache.hadoop.hdfs.web.ParamFilter;
 import org.apache.hadoop.hdfs.web.WebHdfsFileSystem;
 import org.apache.hadoop.hdfs.web.resources.AclPermissionParam;
+import org.apache.hadoop.hdfs.web.resources.ExceptionHandler;
 import org.apache.hadoop.hdfs.web.resources.Param;
 import org.apache.hadoop.hdfs.web.resources.UserParam;
+import org.apache.hadoop.hdfs.web.resources.UserProvider;
 import org.apache.hadoop.http.HttpConfig;
 import org.apache.hadoop.http.HttpServer2;
 import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.http.RestCsrfPreventionFilter;
 
-import com.sun.jersey.api.core.ResourceConfig;
+import org.glassfish.jersey.internal.inject.AbstractBinder;
+import org.glassfish.jersey.server.ResourceConfig;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Encapsulates the HTTP server started by the NameNode. 
  */
 @InterfaceAudience.Private
 public class NameNodeHttpServer {
+
+  private static final Logger LOG = LoggerFactory.getLogger(NameNodeHttpServer.class);
+
   private HttpServer2 httpServer;
   private final Configuration conf;
   private final NameNode nn;
@@ -76,10 +86,8 @@ public class NameNodeHttpServer {
     this.bindAddress = bindAddress;
   }
 
-  public static void initWebHdfs(Configuration conf, String hostname,
-      String httpKeytab,
-      HttpServer2 httpServer2, String jerseyResourcePackage)
-      throws IOException {
+  public static void initWebHdfs(Configuration conf, HttpServer2 httpServer2,
+      String jerseyResourcePackage) throws IOException {
     // set user pattern based on configuration file
     UserParam.setUserPattern(conf.get(
         HdfsClientConfigKeys.DFS_WEBHDFS_USER_PATTERN_KEY,
@@ -101,12 +109,24 @@ public class NameNodeHttpServer {
           new String[] {pathSpec});
     }
 
+    // add a filter to change parameter names to lower cases
+    HttpServer2.defineFilter(httpServer2.getWebAppContext(),
+        ParamFilter.class.getName(), ParamFilter.class.getName(), null,
+        new String[] {pathSpec});
+
     // add webhdfs packages
     final Map<String, String> params = new HashMap<>();
-    params.put(ResourceConfig.FEATURE_MATCH_MATRIX_PARAMS, "true");
-    httpServer2.addJerseyResourcePackage(
-        jerseyResourcePackage + ";" + Param.class.getPackage().getName(),
-        pathSpec, params);
+    ResourceConfig config = new ResourceConfig();
+    config.register(ExceptionHandler.class);
+    config.packages(jerseyResourcePackage, Param.class.getPackage().getName());
+    config.register(new AbstractBinder() {
+      // add a factory to generate UserGroupInformation
+      @Override
+      protected void configure() {
+        bindFactory(UserProvider.class).to(UserGroupInformation.class);
+      }
+    });
+    httpServer2.addJerseyResourceConfig(config, pathSpec, params);
   }
 
   /**
@@ -134,7 +154,7 @@ public class NameNodeHttpServer {
       }
     }
 
-    HttpServer2.Builder builder = DFSUtil.httpServerTemplateForNNAndJN(conf,
+    HttpServer2.Builder builder = DFSUtil.getHttpServerTemplate(conf,
         httpAddr, httpsAddr, "hdfs",
         DFSConfigKeys.DFS_NAMENODE_KERBEROS_INTERNAL_SPNEGO_PRINCIPAL_KEY,
         DFSConfigKeys.DFS_NAMENODE_KEYTAB_FILE_KEY);
@@ -159,10 +179,8 @@ public class NameNodeHttpServer {
       httpServer.setAttribute(DFSConfigKeys.DFS_DATANODE_HTTPS_PORT_KEY,
           datanodeSslPort.getPort());
     }
-    String httpKeytab = conf.get(DFSUtil.getSpnegoKeytabKey(conf,
-        DFSConfigKeys.DFS_NAMENODE_KEYTAB_FILE_KEY));
-    initWebHdfs(conf, bindAddress.getHostName(), httpKeytab, httpServer,
-        NamenodeWebHdfsMethods.class.getPackage().getName());
+
+    initWebHdfs(conf, httpServer, NamenodeWebHdfsMethods.class.getPackage().getName());
 
     httpServer.setAttribute(NAMENODE_ATTRIBUTE_KEY, nn);
     httpServer.setAttribute(JspHelper.CURRENT_CONF, conf);
@@ -172,14 +190,20 @@ public class NameNodeHttpServer {
     int connIdx = 0;
     if (policy.isHttpEnabled()) {
       httpAddress = httpServer.getConnectorAddress(connIdx++);
-      conf.set(DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY,
-          NetUtils.getHostPortString(httpAddress));
+      if (httpAddress != null) {
+        conf.set(DFSConfigKeys.DFS_NAMENODE_HTTP_ADDRESS_KEY,
+            NetUtils.getHostPortString(httpAddress));
+        LOG.info("Listening for HTTP traffic on {}", httpAddress);
+      }
     }
 
     if (policy.isHttpsEnabled()) {
       httpsAddress = httpServer.getConnectorAddress(connIdx);
-      conf.set(DFSConfigKeys.DFS_NAMENODE_HTTPS_ADDRESS_KEY,
-          NetUtils.getHostPortString(httpsAddress));
+      if (httpsAddress != null) {
+        conf.set(DFSConfigKeys.DFS_NAMENODE_HTTPS_ADDRESS_KEY,
+            NetUtils.getHostPortString(httpsAddress));
+        LOG.info("Listening for HTTPS traffic on {}", httpsAddress);
+      }
     }
   }
 

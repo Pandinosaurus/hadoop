@@ -19,7 +19,6 @@
 package org.apache.hadoop.mapreduce.v2.app.webapp;
 
 import static org.apache.hadoop.mapreduce.v2.app.webapp.AMParams.APP_ID;
-import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
@@ -27,6 +26,7 @@ import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.SocketException;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.security.KeyPair;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
@@ -39,7 +39,12 @@ import javax.net.ssl.SSLException;
 
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
-import org.junit.jupiter.api.Assertions;
+import org.apache.hadoop.thirdparty.com.google.common.net.HttpHeaders;
+import org.apache.hadoop.yarn.webapp.GenericExceptionHandler;
+import org.apache.hadoop.yarn.webapp.WebApps;
+import org.glassfish.jersey.internal.inject.AbstractBinder;
+import org.glassfish.jersey.jettison.JettisonFeature;
+import org.glassfish.jersey.server.ResourceConfig;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.http.HttpConfig.Policy;
@@ -47,6 +52,7 @@ import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.mapreduce.v2.api.records.JobId;
 import org.apache.hadoop.mapreduce.v2.api.records.JobState;
 import org.apache.hadoop.mapreduce.v2.api.records.TaskId;
+import org.apache.hadoop.mapreduce.v2.api.records.TaskType;
 import org.apache.hadoop.mapreduce.v2.app.AppContext;
 import org.apache.hadoop.mapreduce.v2.app.MRApp;
 import org.apache.hadoop.mapreduce.v2.app.MockAppContext;
@@ -58,24 +64,23 @@ import org.apache.hadoop.mapreduce.v2.app.job.Task;
 import org.apache.hadoop.mapreduce.v2.app.job.TaskAttempt;
 import org.apache.hadoop.mapreduce.v2.util.MRApps;
 import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.service.ServiceOperations;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.webproxy.ProxyUriUtils;
 import org.apache.hadoop.yarn.server.webproxy.amfilter.AmFilterInitializer;
-import org.apache.hadoop.yarn.webapp.WebApps;
 import org.apache.hadoop.yarn.webapp.test.WebAppTests;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 import org.apache.http.HttpStatus;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
-import org.apache.hadoop.thirdparty.com.google.common.net.HttpHeaders;
 import com.google.inject.Injector;
-import org.junit.jupiter.api.extension.ExtendWith;
-import uk.org.webcompere.systemstubs.environment.EnvironmentVariables;
-import uk.org.webcompere.systemstubs.jupiter.SystemStub;
-import uk.org.webcompere.systemstubs.jupiter.SystemStubsExtension;
 
-@ExtendWith(SystemStubsExtension.class)
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
+
 public class TestAMWebApp {
 
   private static final File TEST_DIR = new File(
@@ -88,8 +93,7 @@ public class TestAMWebApp {
     TEST_DIR.delete();
   }
 
-  @Test
-  public void testAppControllerIndex() {
+  @Test public void testAppControllerIndex() {
     AppContext ctx = new MockAppContext(0, 1, 1, 1);
     Injector injector = WebAppTests.createMockInjector(AppContext.class, ctx);
     AppController controller = injector.getInstance(AppController.class);
@@ -97,29 +101,25 @@ public class TestAMWebApp {
     assertEquals(ctx.getApplicationID().toString(), controller.get(APP_ID,""));
   }
 
-  @Test
-  public void testAppView() {
+  @Test public void testAppView() {
     WebAppTests.testPage(AppView.class, AppContext.class, new MockAppContext(0, 1, 1, 1));
   }
 
 
   
-  @Test
-  public void testJobView() {
+  @Test public void testJobView() {
     AppContext appContext = new MockAppContext(0, 1, 1, 1);
     Map<String, String> params = getJobParams(appContext);
     WebAppTests.testPage(JobPage.class, AppContext.class, appContext, params);
   }
 
-  @Test
-  public void testTasksView() {
+  @Test public void testTasksView() {
     AppContext appContext = new MockAppContext(0, 1, 1, 1);
     Map<String, String> params = getTaskParams(appContext);
     WebAppTests.testPage(TasksPage.class, AppContext.class, appContext, params);
   }
 
-  @Test
-  public void testTaskView() {
+  @Test public void testTaskView() {
     AppContext appContext = new MockAppContext(0, 1, 1, 1);
     Map<String, String> params = getTaskParams(appContext);
     App app = new App(appContext);
@@ -146,22 +146,19 @@ public class TestAMWebApp {
     return params;
   }
 
-  @Test
-  public void testConfView() {
+  @Test public void testConfView() {
     WebAppTests.testPage(JobConfPage.class, AppContext.class,
                          new MockAppContext(0, 1, 1, 1));
   }
 
-  @Test
-  public void testCountersView() {
+  @Test public void testCountersView() {
     AppContext appContext = new MockAppContext(0, 1, 1, 1);
     Map<String, String> params = getJobParams(appContext);
     WebAppTests.testPage(CountersPage.class, AppContext.class,
                          appContext, params);
   }
   
-  @Test
-  public void testSingleCounterView() {
+  @Test public void testSingleCounterView() {
     AppContext appContext = new MockAppContext(0, 1, 1, 1);
     Job job = appContext.getAllJobs().values().iterator().next();
     // add a failed task to the job without any counters
@@ -176,16 +173,14 @@ public class TestAMWebApp {
                          appContext, params);
   }
 
-  @Test
-  public void testTaskCountersView() {
+  @Test public void testTaskCountersView() {
     AppContext appContext = new MockAppContext(0, 1, 1, 1);
     Map<String, String> params = getTaskParams(appContext);
     WebAppTests.testPage(CountersPage.class, AppContext.class,
                          appContext, params);
   }
 
-  @Test
-  public void testSingleTaskCounterView() {
+  @Test public void testSingleTaskCounterView() {
     AppContext appContext = new MockAppContext(0, 1, 1, 2);
     Map<String, String> params = getTaskParams(appContext);
     params.put(AMParams.COUNTER_GROUP, 
@@ -221,20 +216,20 @@ public class TestAMWebApp {
         NetUtils.getHostPortString(((MRClientService) app.getClientService())
           .getWebApp().getListenerAddress());
     // http:// should be accessible
-    URL httpUrl = new URL("http://" + hostPort);
+    URL httpUrl = new URL("http://" + hostPort + "/mapreduce/");
     HttpURLConnection conn = (HttpURLConnection) httpUrl.openConnection();
     InputStream in = conn.getInputStream();
     ByteArrayOutputStream out = new ByteArrayOutputStream();
     IOUtils.copyBytes(in, out, 1024);
-    Assertions.assertTrue(out.toString().contains("MapReduce Application"));
+    assertTrue(out.toString().contains("MapReduce Application"));
 
     // https:// is not accessible.
-    URL httpsUrl = new URL("https://" + hostPort);
+    URL httpsUrl = new URL("https://" + hostPort + "/mapreduce/");
     try {
       HttpURLConnection httpsConn =
           (HttpURLConnection) httpsUrl.openConnection();
       httpsConn.getInputStream();
-      Assertions.fail("https:// is not accessible, expected to fail");
+      fail("https:// is not accessible, expected to fail");
     } catch (SSLException e) {
       // expected
     }
@@ -242,9 +237,6 @@ public class TestAMWebApp {
     app.waitForState(job, JobState.SUCCEEDED);
     app.verifyCompleted();
   }
-
-  @SystemStub
-  public EnvironmentVariables environmentVariables;
 
   @Test
   public void testMRWebAppSSLEnabled() throws Exception {
@@ -264,9 +256,8 @@ public class TestAMWebApp {
     keystoreFile.getParentFile().mkdirs();
     KeyStoreTestUtil.createKeyStore(keystoreFile.getAbsolutePath(), "password",
         "server", keyPair.getPrivate(), cert);
-    environmentVariables.set("KEYSTORE_FILE_LOCATION",
-        keystoreFile.getAbsolutePath());
-    environmentVariables.set("KEYSTORE_PASSWORD", "password");
+    System.setProperty("KEYSTORE_FILE_LOCATION", keystoreFile.getAbsolutePath());
+    System.setProperty("KEYSTORE_PASSWORD", "password");
 
     Job job = app.submit(conf);
 
@@ -274,7 +265,7 @@ public class TestAMWebApp {
         NetUtils.getHostPortString(((MRClientService) app.getClientService())
             .getWebApp().getListenerAddress());
     // https:// should be accessible
-    URL httpsUrl = new URL("https://" + hostPort);
+    URL httpsUrl = new URL("https://" + hostPort + "/mapreduce/");
     HttpsURLConnection httpsConn =
         (HttpsURLConnection) httpsUrl.openConnection();
     KeyStoreTestUtil.setAllowAllSSL(httpsConn);
@@ -282,15 +273,15 @@ public class TestAMWebApp {
     InputStream in = httpsConn.getInputStream();
     ByteArrayOutputStream out = new ByteArrayOutputStream();
     IOUtils.copyBytes(in, out, 1024);
-    Assertions.assertTrue(out.toString().contains("MapReduce Application"));
+    assertTrue(out.toString().contains("MapReduce Application"));
 
     // http:// is not accessible.
-    URL httpUrl = new URL("http://" + hostPort);
+    URL httpUrl = new URL("http://" + hostPort + "/mapreduce/");
     try {
       HttpURLConnection httpConn =
           (HttpURLConnection) httpUrl.openConnection();
       httpConn.getResponseCode();
-      Assertions.fail("http:// is not accessible, expected to fail");
+      fail("http:// is not accessible, expected to fail");
     } catch (SocketException e) {
       // expected
     }
@@ -299,6 +290,8 @@ public class TestAMWebApp {
     app.verifyCompleted();
 
     keystoreFile.delete();
+    System.clearProperty("KEYSTORE_FILE_LOCATION");
+    System.clearProperty("KEYSTORE_PASSWORD");
   }
 
   @Test
@@ -320,9 +313,8 @@ public class TestAMWebApp {
     keystoreFile.getParentFile().mkdirs();
     KeyStoreTestUtil.createKeyStore(keystoreFile.getAbsolutePath(), "password",
         "server", keyPair.getPrivate(), cert);
-    environmentVariables.set("KEYSTORE_FILE_LOCATION",
-        keystoreFile.getAbsolutePath());
-    environmentVariables.set("KEYSTORE_PASSWORD", "password");
+    System.setProperty("KEYSTORE_FILE_LOCATION", keystoreFile.getAbsolutePath());
+    System.setProperty("KEYSTORE_PASSWORD", "password");
 
     KeyPair clientKeyPair = KeyStoreTestUtil.generateKeyPair("RSA");
     X509Certificate clientCert = KeyStoreTestUtil.generateCertificate(
@@ -331,9 +323,8 @@ public class TestAMWebApp {
     truststoreFile.getParentFile().mkdirs();
     KeyStoreTestUtil.createTrustStore(truststoreFile.getAbsolutePath(),
         "password", "client", clientCert);
-    environmentVariables.set("TRUSTSTORE_FILE_LOCATION",
-        truststoreFile.getAbsolutePath());
-    environmentVariables.set("TRUSTSTORE_PASSWORD", "password");
+    System.setProperty("TRUSTSTORE_FILE_LOCATION", truststoreFile.getAbsolutePath());
+    System.setProperty("TRUSTSTORE_PASSWORD", "password");
 
     Job job = app.submit(conf);
 
@@ -341,7 +332,7 @@ public class TestAMWebApp {
         NetUtils.getHostPortString(((MRClientService) app.getClientService())
             .getWebApp().getListenerAddress());
     // https:// should be accessible
-    URL httpsUrl = new URL("https://" + hostPort);
+    URL httpsUrl = new URL("https://" + hostPort + "/mapreduce/");
     HttpsURLConnection httpsConn =
         (HttpsURLConnection) httpsUrl.openConnection();
     KeyStoreTestUtil.setAllowAllSSL(httpsConn, clientCert, clientKeyPair);
@@ -349,7 +340,7 @@ public class TestAMWebApp {
     InputStream in = httpsConn.getInputStream();
     ByteArrayOutputStream out = new ByteArrayOutputStream();
     IOUtils.copyBytes(in, out, 1024);
-    Assertions.assertTrue(out.toString().contains("MapReduce Application"));
+    assertTrue(out.toString().contains("MapReduce Application"));
 
     // Try with wrong client cert
     KeyPair otherClientKeyPair = KeyStoreTestUtil.generateKeyPair("RSA");
@@ -361,7 +352,7 @@ public class TestAMWebApp {
       HttpURLConnection httpConn =
           (HttpURLConnection) httpsUrl.openConnection();
       httpConn.getResponseCode();
-      Assertions.fail("Wrong client certificate, expected to fail");
+      fail("Wrong client certificate, expected to fail");
     } catch (SSLException e) {
       // expected
     }
@@ -371,6 +362,11 @@ public class TestAMWebApp {
 
     keystoreFile.delete();
     truststoreFile.delete();
+
+    System.clearProperty("KEYSTORE_FILE_LOCATION");
+    System.clearProperty("KEYSTORE_PASSWORD");
+    System.clearProperty("TRUSTSTORE_FILE_LOCATION");
+    System.clearProperty("TRUSTSTORE_PASSWORD");
   }
 
   static String webProxyBase = null;
@@ -416,17 +412,97 @@ public class TestAMWebApp {
       String expectedURL = scheme + conf.get(YarnConfiguration.PROXY_ADDRESS)
           + ProxyUriUtils.getPath(app.getAppID(), "/mapreduce", true);
 
-      Assertions.assertEquals(expectedURL,
+      assertEquals(expectedURL,
         conn.getHeaderField(HttpHeaders.LOCATION));
-      Assertions.assertEquals(HttpStatus.SC_MOVED_TEMPORARILY,
+      assertEquals(HttpStatus.SC_MOVED_TEMPORARILY,
         conn.getResponseCode());
       app.waitForState(job, JobState.SUCCEEDED);
       app.verifyCompleted();
     }
   }
 
+  @Test
+  public void testAttemptsPageRender() throws Exception {
+    MRApp app = new MRApp(2, 2, true, this.getClass().getName(), true) {
+      @Override
+      protected ClientService createClientService(AppContext context) {
+        return new MRClientService(context);
+      }
+    };
+    try {
+      Job job = app.submit(new Configuration());
+      app.waitForState(job, JobState.SUCCEEDED);
+      String hostPort =
+          NetUtils.getHostPortString(((MRClientService) app.getClientService())
+              .getWebApp().getListenerAddress());
+      // The controller and view must share App within each HTTP request.
+      for (TaskType taskType : TaskType.values()) {
+        URL attemptsUrl = new URL("http://" + hostPort + "/mapreduce/attempts/"
+            + job.getID() + "/" + MRApps.taskSymbol(taskType) + "/SUCCESSFUL");
+        HttpURLConnection conn = (HttpURLConnection) attemptsUrl.openConnection();
+        conn.setConnectTimeout(10000);
+        conn.setReadTimeout(10000);
+        try {
+          assertEquals(HttpURLConnection.HTTP_OK, conn.getResponseCode(),
+              attemptsUrl.toString());
+          ByteArrayOutputStream out = new ByteArrayOutputStream();
+          try (InputStream in = conn.getInputStream()) {
+            IOUtils.copyBytes(in, out, 1024, false);
+          }
+          String content = out.toString(StandardCharsets.UTF_8.name());
+          for (Task task : job.getTasks().values()) {
+            for (TaskAttempt attempt : task.getAttempts().values()) {
+              String attemptId = MRApps.toString(attempt.getID());
+              if (task.getType() == taskType) {
+                assertTrue(content.contains(attemptId),
+                    "Attempts page should contain " + attemptId);
+              } else {
+                assertFalse(content.contains(attemptId),
+                    "Attempts page should not contain " + attemptId);
+              }
+            }
+          }
+        } finally {
+          conn.disconnect();
+        }
+      }
+      app.verifyCompleted();
+    } finally {
+      try {
+        ServiceOperations.stop(app.getClientService());
+      } finally {
+        app.stop();
+      }
+    }
+  }
+
   public static void main(String[] args) {
-    WebApps.$for("yarn", AppContext.class, new MockAppContext(0, 8, 88, 4)).
-        at(58888).inDevMode().start(new AMWebApp()).joinThread();
+    AppContext context = new MockAppContext(0, 8, 88, 4);
+    WebApps.$for("yarn", AppContext.class, context).withResourceConfig(configure(context)).
+        at(58888).inDevMode().start(new AMWebApp(context)).joinThread();
+  }
+
+  protected static ResourceConfig configure(AppContext context) {
+    ResourceConfig config = new ResourceConfig();
+    config.packages("org.apache.hadoop.mapreduce.v2.app.webapp");
+    config.register(new JerseyBinder(context));
+    config.register(AMWebServices.class);
+    config.register(GenericExceptionHandler.class);
+    config.register(new JettisonFeature()).register(JAXBContextResolver.class);
+    return config;
+  }
+
+  private static class JerseyBinder extends AbstractBinder {
+    private AppContext context;
+
+    JerseyBinder(AppContext context) {
+      this.context = context;
+    }
+
+    @Override
+    protected void configure() {
+      bind(context).to(AppContext.class).named("am");
+      bind(new App(context)).to(App.class).named("app");
+    }
   }
 }

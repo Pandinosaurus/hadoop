@@ -17,8 +17,13 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+
+import java.util.Optional;
 import java.util.function.Supplier;
+
+import org.apache.hadoop.hdfs.protocol.DatanodeID;
 import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.Uninterruptibles;
 import org.apache.commons.io.FileUtils;
 import org.apache.hadoop.conf.Configuration;
@@ -54,11 +59,12 @@ import org.apache.hadoop.io.nativeio.NativeIO;
 import org.apache.hadoop.io.nativeio.NativeIO.POSIX.NoMlockCacheManipulator;
 import org.apache.hadoop.net.ServerSocketUtil;
 import org.apache.hadoop.test.GenericTestUtils;
+import org.apache.hadoop.util.JsonUtils;
 import org.apache.hadoop.util.Time;
 import org.apache.hadoop.util.VersionInfo;
-import org.junit.Assert;
-import org.junit.Test;
-import org.eclipse.jetty.util.ajax.JSON;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
+import org.junit.jupiter.api.io.TempDir;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -77,12 +83,12 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.apache.hadoop.util.Shell.getMemlockLimit;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Class for testing {@link NameNodeMXBean} implementation
@@ -96,6 +102,10 @@ public class TestNameNodeMXBean {
    * Used to assert equality between doubles
    */
   private static final double DELTA = 0.000001;
+
+  @SuppressWarnings("checkstyle:VisibilityModifier")
+  @TempDir
+  java.nio.file.Path baseDir;
 
   static {
     NativeIO.POSIX.setCacheManipulator(new NoMlockCacheManipulator());
@@ -112,7 +122,7 @@ public class TestNameNodeMXBean {
     MiniDFSCluster cluster = null;
 
     try {
-      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(4).build();
+      cluster = new MiniDFSCluster.Builder(conf, baseDir.toFile()).numDataNodes(4).build();
       cluster.waitActive();
 
       // Set upgrade domain on the first DN.
@@ -139,14 +149,13 @@ public class TestNameNodeMXBean {
       String clusterId = (String) mbs.getAttribute(mxbeanName, "ClusterId");
       assertEquals(fsn.getClusterId(), clusterId);
       // get attribute "BlockPoolId"
-      String blockpoolId = (String) mbs.getAttribute(mxbeanName, 
+      String blockpoolId = (String) mbs.getAttribute(mxbeanName,
           "BlockPoolId");
       assertEquals(fsn.getBlockPoolId(), blockpoolId);
       // get attribute "Version"
       String version = (String) mbs.getAttribute(mxbeanName, "Version");
       assertEquals(fsn.getVersion(), version);
-      assertTrue(version.equals(VersionInfo.getVersion()
-          + ", r" + VersionInfo.getRevision()));
+      assertEquals(version, VersionInfo.getVersion() + ", r" + VersionInfo.getRevision());
       // get attribute "Used"
       Long used = (Long) mbs.getAttribute(mxbeanName, "Used");
       assertEquals(fsn.getUsed(), used.longValue());
@@ -169,16 +178,16 @@ public class TestNameNodeMXBean {
       // get attribute alivenodeinfo
       String alivenodeinfo = (String) (mbs.getAttribute(mxbeanName,
           "LiveNodes"));
-      Map<String, Map<String, Object>> liveNodes =
-          (Map<String, Map<String, Object>>) JSON.parse(alivenodeinfo);
-      assertTrue(liveNodes.size() == 4);
+      Map<String, Map<String, Object>> liveNodes = JsonUtils.parse(alivenodeinfo,
+          new TypeReference<Map<String, Map<String, Object>>>() {});
+      assertEquals(4, liveNodes.size());
       for (Map<String, Object> liveNode : liveNodes.values()) {
         assertTrue(liveNode.containsKey("nonDfsUsedSpace"));
-        assertTrue(((Long)liveNode.get("nonDfsUsedSpace")) >= 0);
+        assertTrue(toLong(liveNode.get("nonDfsUsedSpace")) >= 0);
         assertTrue(liveNode.containsKey("capacity"));
-        assertTrue(((Long)liveNode.get("capacity")) > 0);
+        assertTrue(toLong(liveNode.get("capacity")) > 0);
         assertTrue(liveNode.containsKey("numBlocks"));
-        assertTrue(((Long)liveNode.get("numBlocks")) == 0);
+        assertEquals(0L, toLong(liveNode.get("numBlocks")));
         assertTrue(liveNode.containsKey("lastBlockReport"));
         // a. By default the upgrade domain isn't defined on any DN.
         // b. If the upgrade domain is set on a DN, JMX should have the same
@@ -187,7 +196,7 @@ public class TestNameNodeMXBean {
         if (!xferAddr.equals(dnXferAddrWithUpgradeDomainSet)) {
           assertTrue(!liveNode.containsKey("upgradeDomain"));
         } else {
-          assertTrue(liveNode.get("upgradeDomain").equals(upgradeDomain));
+          assertEquals(upgradeDomain, liveNode.get("upgradeDomain"));
         }
         // "adminState" is set to maintenance only for the specific dn.
         boolean inMaintenance = liveNode.get("adminState").equals(
@@ -206,14 +215,15 @@ public class TestNameNodeMXBean {
               cluster.getDataNodes().get(3).getDatanodeId());
       decommissionedNode.setDecommissioned();
 
-      // Assert the location field is included in the mxbeanName
+      // Assert the location and uuid field is included in the mxbeanName
       // under different states
       String alivenodeinfo1 = (String) (mbs.getAttribute(mxbeanName,
               "LiveNodes"));
-      Map<String, Map<String, Object>> liveNodes1 =
-              (Map<String, Map<String, Object>>) JSON.parse(alivenodeinfo1);
+      Map<String, Map<String, Object>> liveNodes1 = JsonUtils.parse(alivenodeinfo1,
+          new TypeReference<Map<String, Map<String, Object>>>() {});
       for (Map<String, Object> liveNode : liveNodes1.values()) {
         assertTrue(liveNode.containsKey("location"));
+        assertTrue(liveNode.containsKey("uuid"));
       }
 
       // get attributes DeadNodes
@@ -223,37 +233,34 @@ public class TestNameNodeMXBean {
       // get attribute NodeUsage
       String nodeUsage = (String) (mbs.getAttribute(mxbeanName,
           "NodeUsage"));
-      assertEquals("Bad value for NodeUsage", fsn.getNodeUsage(), nodeUsage);
+      assertEquals(fsn.getNodeUsage(), nodeUsage, "Bad value for NodeUsage");
       // get attribute NameJournalStatus
       String nameJournalStatus = (String) (mbs.getAttribute(mxbeanName,
           "NameJournalStatus"));
-      assertEquals("Bad value for NameJournalStatus",
-          fsn.getNameJournalStatus(), nameJournalStatus);
+      assertEquals(fsn.getNameJournalStatus(), nameJournalStatus,
+          "Bad value for NameJournalStatus");
       // get attribute JournalTransactionInfo
       String journalTxnInfo = (String) mbs.getAttribute(mxbeanName,
           "JournalTransactionInfo");
-      assertEquals("Bad value for NameTxnIds", fsn.getJournalTransactionInfo(),
-          journalTxnInfo);
+      assertEquals(fsn.getJournalTransactionInfo(), journalTxnInfo, "Bad value for NameTxnIds");
       // get attribute "CompileInfo"
       String compileInfo = (String) mbs.getAttribute(mxbeanName, "CompileInfo");
-      assertEquals("Bad value for CompileInfo", fsn.getCompileInfo(),
-          compileInfo);
+      assertEquals(fsn.getCompileInfo(), compileInfo, "Bad value for CompileInfo");
       // get attribute CorruptFiles
       String corruptFiles = (String) (mbs.getAttribute(mxbeanName,
           "CorruptFiles"));
-      assertEquals("Bad value for CorruptFiles", fsn.getCorruptFiles(),
-          corruptFiles);
+      assertEquals(fsn.getCorruptFiles(), corruptFiles, "Bad value for CorruptFiles");
       // get attribute CorruptFilesCount
       int corruptFilesCount = (int) (mbs.getAttribute(mxbeanName,
           "CorruptFilesCount"));
-      assertEquals("Bad value for CorruptFilesCount",
-          fsn.getCorruptFilesCount(), corruptFilesCount);
+      assertEquals(fsn.getCorruptFilesCount(), corruptFilesCount,
+          "Bad value for CorruptFilesCount");
       // get attribute NameDirStatuses
       String nameDirStatuses = (String) (mbs.getAttribute(mxbeanName,
           "NameDirStatuses"));
       assertEquals(fsn.getNameDirStatuses(), nameDirStatuses);
-      Map<String, Map<String, String>> statusMap =
-        (Map<String, Map<String, String>>) JSON.parse(nameDirStatuses);
+      Map<String, Map<String, String>> statusMap = JsonUtils.parse(nameDirStatuses,
+          new TypeReference<Map<String, Map<String, String>>>() {});
       Collection<URI> nameDirUris = cluster.getNameDirs(0);
       for (URI nameDirUri : nameDirUris) {
         File nameDir = new File(nameDirUri);
@@ -267,13 +274,13 @@ public class TestNameNodeMXBean {
 
       // This will cause the first dir to fail.
       File failedNameDir = new File(nameDirUris.iterator().next());
-      assertEquals(0, FileUtil.chmod(
-          new File(failedNameDir, "current").getAbsolutePath(), "000"));
+      assertEquals(0, FileUtil.chmod(new File(failedNameDir, "current").getAbsolutePath(), "000"));
       cluster.getNameNodeRpc().rollEditLog();
-      
+
       nameDirStatuses = (String) (mbs.getAttribute(mxbeanName,
           "NameDirStatuses"));
-      statusMap = (Map<String, Map<String, String>>) JSON.parse(nameDirStatuses);
+      statusMap = JsonUtils.parse(nameDirStatuses,
+          new TypeReference<Map<String, Map<String, String>>>() {});
       for (URI nameDirUri : nameDirUris) {
         File nameDir = new File(nameDirUri);
         String expectedStatus =
@@ -286,11 +293,10 @@ public class TestNameNodeMXBean {
       assertEquals(1, statusMap.get("active").size());
       assertEquals(1, statusMap.get("failed").size());
       assertEquals(0L, mbs.getAttribute(mxbeanName, "CacheUsed"));
-      assertEquals(maxLockedMemory *
-          cluster.getDataNodes().size(),
-              mbs.getAttribute(mxbeanName, "CacheCapacity"));
-      assertNull("RollingUpgradeInfo should be null when there is no rolling"
-          + " upgrade", mbs.getAttribute(mxbeanName, "RollingUpgradeStatus"));
+      assertEquals(maxLockedMemory * cluster.getDataNodes().size(),
+          mbs.getAttribute(mxbeanName, "CacheCapacity"));
+      assertNull(mbs.getAttribute(mxbeanName, "RollingUpgradeStatus"),
+          "RollingUpgradeInfo should be null when there is no rolling" + " upgrade");
     } finally {
       if (cluster != null) {
         for (URI dir : cluster.getNameDirs(0)) {
@@ -313,7 +319,7 @@ public class TestNameNodeMXBean {
     hostsFileWriter.initialize(conf, "temp/TestNameNodeMXBean");
 
     try {
-      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
+      cluster = new MiniDFSCluster.Builder(conf, baseDir.toFile()).numDataNodes(3).build();
       cluster.waitActive();
 
       FSNamesystem fsn = cluster.getNameNode().namesystem;
@@ -341,7 +347,8 @@ public class TestNameNodeMXBean {
         "DeadNodes"));
       assertEquals(fsn.getDeadNodes(), deadNodeInfo);
       Map<String, Map<String, Object>> deadNodes =
-          (Map<String, Map<String, Object>>) JSON.parse(deadNodeInfo);
+          JsonUtils.parse(deadNodeInfo,
+              new TypeReference<Map<String, Map<String, Object>>>() {});
       assertTrue(deadNodes.size() > 0);
       for (Map<String, Object> deadNode : deadNodes.values()) {
         assertTrue(deadNode.containsKey("lastContact"));
@@ -356,7 +363,8 @@ public class TestNameNodeMXBean {
     }
   }
 
-  @Test (timeout = 120000)
+  @Test
+  @Timeout(value = 120)
   public void testDecommissioningNodes() throws Exception {
     Configuration conf = new Configuration();
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
@@ -366,7 +374,7 @@ public class TestNameNodeMXBean {
     hostsFileWriter.initialize(conf, "temp/TestNameNodeMXBean");
 
     try {
-      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
+      cluster = new MiniDFSCluster.Builder(conf, baseDir.toFile()).numDataNodes(3).build();
       cluster.waitActive();
 
       FSNamesystem fsn = cluster.getNameNode().namesystem;
@@ -385,8 +393,8 @@ public class TestNameNodeMXBean {
       // 1. Verify Live nodes
       String liveNodesInfo = (String) (mbs.getAttribute(mxbeanName,
           "LiveNodes"));
-      Map<String, Map<String, Object>> liveNodes =
-          (Map<String, Map<String, Object>>) JSON.parse(liveNodesInfo);
+      Map<String, Map<String, Object>> liveNodes = JsonUtils.parse(liveNodesInfo,
+          new TypeReference<Map<String, Map<String, Object>>>() {});
       assertEquals(fsn.getLiveNodes(), liveNodesInfo);
       assertEquals(fsn.getNumLiveDataNodes(), liveNodes.size());
 
@@ -407,8 +415,8 @@ public class TestNameNodeMXBean {
           try {
             String decomNodesInfo = (String) (mbs.getAttribute(mxbeanName,
                 "DecomNodes"));
-            Map<String, Map<String, Object>> decomNodes =
-                (Map<String, Map<String, Object>>) JSON.parse(decomNodesInfo);
+            Map<String, Map<String, Object>> decomNodes = JsonUtils.parse(decomNodesInfo,
+                new TypeReference<Map<String, Map<String, Object>>>() {});
             if (decomNodes.size() > 0) {
               return true;
             }
@@ -422,8 +430,8 @@ public class TestNameNodeMXBean {
       // 2. Verify Decommission InProgress nodes
       String decomNodesInfo = (String) (mbs.getAttribute(mxbeanName,
           "DecomNodes"));
-      Map<String, Map<String, Object>> decomNodes =
-          (Map<String, Map<String, Object>>) JSON.parse(decomNodesInfo);
+      Map<String, Map<String, Object>> decomNodes = JsonUtils.parse(decomNodesInfo,
+          new TypeReference<Map<String, Map<String, Object>>>() {});
       assertEquals(fsn.getDecomNodes(), decomNodesInfo);
       assertEquals(fsn.getNumDecommissioningDataNodes(), decomNodes.size());
       assertEquals(0, fsn.getNumDecomLiveDataNodes());
@@ -443,7 +451,8 @@ public class TestNameNodeMXBean {
       // 3. Verify Decommissioned nodes
       decomNodesInfo = (String) (mbs.getAttribute(mxbeanName, "DecomNodes"));
       decomNodes =
-          (Map<String, Map<String, Object>>) JSON.parse(decomNodesInfo);
+          JsonUtils.parse(decomNodesInfo,
+              new TypeReference<Map<String, Map<String, Object>>>() {});
       assertEquals(0, decomNodes.size());
       assertEquals(fsn.getDecomNodes(), decomNodesInfo);
       assertEquals(1, fsn.getNumDecomLiveDataNodes());
@@ -456,7 +465,8 @@ public class TestNameNodeMXBean {
     }
   }
 
-  @Test(timeout = 120000)
+  @Test
+  @Timeout(value = 120)
   public void testInServiceNodes() throws Exception {
     Configuration conf = new Configuration();
     conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
@@ -469,7 +479,7 @@ public class TestNameNodeMXBean {
     hostsFileWriter.initialize(conf, "temp/TestInServiceNodes");
 
     try {
-      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
+      cluster = new MiniDFSCluster.Builder(conf, baseDir.toFile()).numDataNodes(3).build();
       cluster.waitActive();
 
       final FSNamesystem fsn = cluster.getNameNode().namesystem;
@@ -553,7 +563,8 @@ public class TestNameNodeMXBean {
     }
   }
 
-  @Test (timeout = 120000)
+  @Test
+  @Timeout(value = 120)
   public void testMaintenanceNodes() throws Exception {
     LOG.info("Starting testMaintenanceNodes");
     int expirationInMs = 30 * 1000;
@@ -568,7 +579,7 @@ public class TestNameNodeMXBean {
     hostsFileWriter.initialize(conf, "temp/TestNameNodeMXBean");
 
     try {
-      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(3).build();
+      cluster = new MiniDFSCluster.Builder(conf, baseDir.toFile()).numDataNodes(3).build();
       cluster.waitActive();
 
       FSNamesystem fsn = cluster.getNameNode().namesystem;
@@ -589,7 +600,8 @@ public class TestNameNodeMXBean {
           "LiveNodes"));
       LOG.info("Live Nodes: " + liveNodesInfo);
       Map<String, Map<String, Object>> liveNodes =
-          (Map<String, Map<String, Object>>) JSON.parse(liveNodesInfo);
+          JsonUtils.parse(liveNodesInfo,
+              new TypeReference<Map<String, Map<String, Object>>>() {});
       assertEquals(fsn.getLiveNodes(), liveNodesInfo);
       assertEquals(fsn.getNumLiveDataNodes(), liveNodes.size());
 
@@ -611,8 +623,8 @@ public class TestNameNodeMXBean {
         String enteringMaintenanceNodesInfo =
             (String) (mbs.getAttribute(mxbeanName, "EnteringMaintenanceNodes"));
         Map<String, Map<String, Object>> enteringMaintenanceNodes =
-            (Map<String, Map<String, Object>>) JSON.parse(
-                enteringMaintenanceNodesInfo);
+            JsonUtils.parse(enteringMaintenanceNodesInfo,
+                new TypeReference<Map<String, Map<String, Object>>>() {});
         if (enteringMaintenanceNodes.size() <= 0) {
           LOG.info("Waiting for a node to Enter Maintenance state!");
           Uninterruptibles.sleepUninterruptibly(1, TimeUnit.SECONDS);
@@ -620,10 +632,8 @@ public class TestNameNodeMXBean {
         }
         LOG.info("Nodes entering Maintenance: " + enteringMaintenanceNodesInfo);
         recheck = false;
-        assertEquals(fsn.getEnteringMaintenanceNodes(),
-            enteringMaintenanceNodesInfo);
-        assertEquals(fsn.getNumEnteringMaintenanceDataNodes(),
-            enteringMaintenanceNodes.size());
+        assertEquals(fsn.getEnteringMaintenanceNodes(), enteringMaintenanceNodesInfo);
+        assertEquals(fsn.getNumEnteringMaintenanceDataNodes(), enteringMaintenanceNodes.size());
         assertEquals(0, fsn.getNumInMaintenanceLiveDataNodes());
         assertEquals(0, fsn.getNumInMaintenanceDeadDataNodes());
       }
@@ -638,11 +648,10 @@ public class TestNameNodeMXBean {
       String enteringMaintenanceNodesInfo =
           (String) (mbs.getAttribute(mxbeanName, "EnteringMaintenanceNodes"));
       Map<String, Map<String, Object>> enteringMaintenanceNodes =
-          (Map<String, Map<String, Object>>) JSON.parse(
-              enteringMaintenanceNodesInfo);
+          JsonUtils.parse(enteringMaintenanceNodesInfo,
+              new TypeReference<Map<String, Map<String, Object>>>() {});
       assertEquals(0, enteringMaintenanceNodes.size());
-      assertEquals(fsn.getEnteringMaintenanceNodes(),
-          enteringMaintenanceNodesInfo);
+      assertEquals(fsn.getEnteringMaintenanceNodes(), enteringMaintenanceNodesInfo);
       assertEquals(1, fsn.getNumInMaintenanceLiveDataNodes());
       assertEquals(0, fsn.getNumInMaintenanceDeadDataNodes());
     } finally {
@@ -653,13 +662,14 @@ public class TestNameNodeMXBean {
     }
   }
 
-  @Test(timeout=120000)
+  @Test
+  @Timeout(value = 120)
   @SuppressWarnings("unchecked")
   public void testTopUsers() throws Exception {
     final Configuration conf = new Configuration();
     MiniDFSCluster cluster = null;
     try {
-      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
+      cluster = new MiniDFSCluster.Builder(conf, baseDir.toFile()).numDataNodes(0).build();
       cluster.waitActive();
       MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
       ObjectName mxbeanNameFsns = new ObjectName(
@@ -675,15 +685,14 @@ public class TestNameNodeMXBean {
           (String) (mbs.getAttribute(mxbeanNameFsns, "TopUserOpCounts"));
       ObjectMapper mapper = new ObjectMapper();
       Map<String, Object> map = mapper.readValue(topUsers, Map.class);
-      assertTrue("Could not find map key timestamp", 
-          map.containsKey("timestamp"));
-      assertTrue("Could not find map key windows", map.containsKey("windows"));
+      assertTrue(map.containsKey("timestamp"), "Could not find map key timestamp");
+      assertTrue(map.containsKey("windows"), "Could not find map key windows");
       List<Map<String, List<Map<String, Object>>>> windows =
           (List<Map<String, List<Map<String, Object>>>>) map.get("windows");
-      assertEquals("Unexpected num windows", 3, windows.size());
+      assertEquals(3, windows.size(), "Unexpected num windows");
       for (Map<String, List<Map<String, Object>>> window : windows) {
         final List<Map<String, Object>> ops = window.get("ops");
-        assertEquals("Unexpected num ops", 4, ops.size());
+        assertEquals(4, ops.size(), "Unexpected num ops");
         for (Map<String, Object> op: ops) {
           if (op.get("opType").equals("datanodeReport")) {
             continue;
@@ -698,7 +707,7 @@ public class TestNameNodeMXBean {
           } else {
             expected = NUM_OPS;
           }
-          assertEquals("Unexpected total count", expected, count);
+          assertEquals(expected, count, "Unexpected total count");
         }
       }
     } finally {
@@ -708,14 +717,15 @@ public class TestNameNodeMXBean {
     }
   }
 
-  @Test(timeout=120000)
+  @Test
+  @Timeout(value = 120)
   public void testTopUsersDisabled() throws Exception {
     final Configuration conf = new Configuration();
     // Disable nntop
     conf.setBoolean(DFSConfigKeys.NNTOP_ENABLED_KEY, false);
     MiniDFSCluster cluster = null;
     try {
-      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
+      cluster = new MiniDFSCluster.Builder(conf, baseDir.toFile()).numDataNodes(0).build();
       cluster.waitActive();
       MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
       ObjectName mxbeanNameFsns = new ObjectName(
@@ -729,7 +739,7 @@ public class TestNameNodeMXBean {
       }
       String topUsers =
           (String) (mbs.getAttribute(mxbeanNameFsns, "TopUserOpCounts"));
-      assertNull("Did not expect to find TopUserOpCounts bean!", topUsers);
+      assertNull(topUsers, "Did not expect to find TopUserOpCounts bean!");
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -737,14 +747,15 @@ public class TestNameNodeMXBean {
     }
   }
 
-  @Test(timeout=120000)
+  @Test
+  @Timeout(value = 120)
   public void testTopUsersNoPeriods() throws Exception {
     final Configuration conf = new Configuration();
     conf.setBoolean(DFSConfigKeys.NNTOP_ENABLED_KEY, true);
     conf.set(DFSConfigKeys.NNTOP_WINDOWS_MINUTES_KEY, "");
     MiniDFSCluster cluster = null;
     try {
-      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
+      cluster = new MiniDFSCluster.Builder(conf, baseDir.toFile()).numDataNodes(0).build();
       cluster.waitActive();
       MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
       ObjectName mxbeanNameFsns = new ObjectName(
@@ -758,7 +769,7 @@ public class TestNameNodeMXBean {
       }
       String topUsers =
           (String) (mbs.getAttribute(mxbeanNameFsns, "TopUserOpCounts"));
-      assertNotNull("Expected TopUserOpCounts bean!", topUsers);
+      assertNotNull(topUsers, "Expected TopUserOpCounts bean!");
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -766,12 +777,13 @@ public class TestNameNodeMXBean {
     }
   }
 
-  @Test(timeout = 120000)
+  @Test
+  @Timeout(value = 120)
   public void testQueueLength() throws Exception {
     final Configuration conf = new Configuration();
     MiniDFSCluster cluster = null;
     try {
-      cluster = new MiniDFSCluster.Builder(conf).numDataNodes(0).build();
+      cluster = new MiniDFSCluster.Builder(conf, baseDir.toFile()).numDataNodes(0).build();
       cluster.waitActive();
       MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
       ObjectName mxbeanNameFs =
@@ -785,7 +797,8 @@ public class TestNameNodeMXBean {
     }
   }
 
-  @Test(timeout = 120000)
+  @Test
+  @Timeout(value = 120)
   public void testNNDirectorySize() throws Exception{
     Configuration conf = new Configuration();
     conf.setInt(DFSConfigKeys.DFS_HA_TAILEDITS_PERIOD_KEY, 1);
@@ -801,7 +814,7 @@ public class TestNameNodeMXBean {
                 .addNN(
                     new MiniDFSNNTopology.NNConf("nn2").setIpcPort(ports[1])));
 
-        cluster = new MiniDFSCluster.Builder(conf)
+        cluster = new MiniDFSCluster.Builder(conf, baseDir.toFile())
             .nnTopology(topology).numDataNodes(0)
             .build();
         break;
@@ -842,12 +855,12 @@ public class TestNameNodeMXBean {
   @SuppressWarnings("unchecked")
   private void checkNNDirSize(Collection<URI> nameDirUris, String metric){
     Map<String, Long> nnDirMap =
-        (Map<String, Long>) JSON.parse(metric);
+        JsonUtils.parse(metric,
+            new TypeReference<Map<String, Long>>() {});
     assertEquals(nameDirUris.size(), nnDirMap.size());
     for (URI dirUrl : nameDirUris) {
       File dir = new File(dirUrl);
-      assertEquals(nnDirMap.get(dir.getAbsolutePath()).longValue(),
-          FileUtils.sizeOfDirectory(dir));
+      assertEquals(nnDirMap.get(dir.getAbsolutePath()).longValue(), FileUtils.sizeOfDirectory(dir));
     }
   }
 
@@ -863,28 +876,26 @@ public class TestNameNodeMXBean {
       int dataBlocks = defaultPolicy.getNumDataUnits();
       int parityBlocks = defaultPolicy.getNumParityUnits();
       int totalSize = dataBlocks + parityBlocks;
-      cluster = new MiniDFSCluster.Builder(conf)
+      cluster = new MiniDFSCluster.Builder(conf, baseDir.toFile())
           .numDataNodes(totalSize).build();
       fs = cluster.getFileSystem();
 
       final String defaultPolicyName = defaultPolicy.getName();
       final String rs104PolicyName = "RS-10-4-1024k";
 
-      assertEquals("Enabled EC policies metric should return with " +
-          "the default EC policy", defaultPolicyName,
-          getEnabledEcPoliciesMetric());
+      assertEquals(defaultPolicyName, getEnabledEcPoliciesMetric(),
+          "Enabled EC policies metric should return with " + "the default EC policy");
 
       fs.enableErasureCodingPolicy(rs104PolicyName);
-      assertEquals("Enabled EC policies metric should return with " +
-              "both enabled policies separated by a comma",
-          rs104PolicyName + ", " + defaultPolicyName,
-          getEnabledEcPoliciesMetric());
+      assertEquals(rs104PolicyName + ", " + defaultPolicyName, getEnabledEcPoliciesMetric(),
+          "Enabled EC policies metric should return with " +
+              "both enabled policies separated by a comma");
 
       fs.disableErasureCodingPolicy(defaultPolicyName);
       fs.disableErasureCodingPolicy(rs104PolicyName);
-      assertEquals("Enabled EC policies metric should return with " +
-          "an empty string if there is no enabled policy",
-          "", getEnabledEcPoliciesMetric());
+      assertEquals("", getEnabledEcPoliciesMetric(),
+          "Enabled EC policies metric should return with " +
+              "an empty string if there is no enabled policy");
     } finally {
       fs.close();
       cluster.shutdown();
@@ -903,7 +914,7 @@ public class TestNameNodeMXBean {
           StripedFileTestUtil.getDefaultECPolicy().getNumParityUnits();
       int cellSize = StripedFileTestUtil.getDefaultECPolicy().getCellSize();
       int totalSize = dataBlocks + parityBlocks;
-      cluster = new MiniDFSCluster.Builder(conf)
+      cluster = new MiniDFSCluster.Builder(conf, baseDir.toFile())
           .numDataNodes(totalSize).build();
       fs = cluster.getFileSystem();
       fs.enableErasureCodingPolicy(
@@ -968,7 +979,7 @@ public class TestNameNodeMXBean {
               return true;
             }
           } catch (Exception e) {
-            Assert.fail("Caught unexpected exception.");
+            fail("Caught unexpected exception.");
           }
           return false;
         }
@@ -985,13 +996,12 @@ public class TestNameNodeMXBean {
       Long ecMissingBlocks =
           (Long) mbs.getAttribute(ecBlkGrpStateMBeanName,
               "MissingECBlockGroups");
-      assertEquals("Unexpected total missing blocks!",
-          expectedMissingBlockCount, totalMissingBlocks);
-      assertEquals("Unexpected total missing blocks!",
-          totalMissingBlocks,
-          (replicaMissingBlocks + ecMissingBlocks));
-      assertEquals("Unexpected total ec missing blocks!",
-          expectedMissingBlockCount, ecMissingBlocks.longValue());
+      assertEquals(expectedMissingBlockCount, totalMissingBlocks,
+          "Unexpected total missing blocks!");
+      assertEquals(totalMissingBlocks, (replicaMissingBlocks + ecMissingBlocks),
+          "Unexpected total missing blocks!");
+      assertEquals(expectedMissingBlockCount, ecMissingBlocks.longValue(),
+          "Unexpected total ec missing blocks!");
 
       // Verification of corrupt blocks
       long totalCorruptBlocks =
@@ -1002,17 +1012,16 @@ public class TestNameNodeMXBean {
       Long ecCorruptBlocks =
           (Long) mbs.getAttribute(ecBlkGrpStateMBeanName,
               "CorruptECBlockGroups");
-      assertEquals("Unexpected total corrupt blocks!",
-          expectedCorruptBlockCount, totalCorruptBlocks);
-      assertEquals("Unexpected total corrupt blocks!",
-          totalCorruptBlocks,
-          (replicaCorruptBlocks + ecCorruptBlocks));
-      assertEquals("Unexpected total ec corrupt blocks!",
-          expectedCorruptBlockCount, ecCorruptBlocks.longValue());
+      assertEquals(expectedCorruptBlockCount, totalCorruptBlocks,
+          "Unexpected total corrupt blocks!");
+      assertEquals(totalCorruptBlocks, (replicaCorruptBlocks + ecCorruptBlocks),
+          "Unexpected total corrupt blocks!");
+      assertEquals(expectedCorruptBlockCount, ecCorruptBlocks.longValue(),
+          "Unexpected total ec corrupt blocks!");
 
       String corruptFiles = (String) (mbs.getAttribute(namenodeMXBeanName,
           "CorruptFiles"));
-      int numCorruptFiles = ((Object[]) JSON.parse(corruptFiles)).length;
+      int numCorruptFiles = (JsonUtils.parse(corruptFiles, Object[].class)).length;
       assertEquals(1, numCorruptFiles);
     } finally {
       if (fs != null) {
@@ -1046,7 +1055,7 @@ public class TestNameNodeMXBean {
       int blockSize = stripesPerBlock * cellSize;
       conf.setLong(DFSConfigKeys.DFS_BLOCK_SIZE_KEY, blockSize);
 
-      cluster = new MiniDFSCluster.Builder(conf)
+      cluster = new MiniDFSCluster.Builder(conf, baseDir.toFile())
           .nnTopology(MiniDFSNNTopology.simpleHAFederatedTopology(1)).
               numDataNodes(totalSize).build();
       cluster.waitActive();
@@ -1126,13 +1135,73 @@ public class TestNameNodeMXBean {
     }
   }
 
+  @SuppressWarnings({ "unchecked" })
+  @Test
+  public void testDeadNodesInNameNodeMXBean() throws Exception {
+    Configuration conf = new Configuration();
+    conf.setInt(DFSConfigKeys.DFS_HEARTBEAT_INTERVAL_KEY, 1);
+    conf.setInt(DFSConfigKeys.DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY, 1);
+    MiniDFSCluster cluster = null;
+    HostsFileWriter hostsFileWriter = new HostsFileWriter();
+    hostsFileWriter.initialize(conf, "temp/TestNameNodeMXBean");
+
+    try {
+      cluster = new MiniDFSCluster.Builder(conf, baseDir.toFile()).numDataNodes(3).build();
+      cluster.waitActive();
+
+      FSNamesystem fsn = cluster.getNameNode().namesystem;
+
+      MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
+      ObjectName mxbeanName = new ObjectName(
+          "Hadoop:service=NameNode,name=NameNodeInfo");
+
+      List<String> hosts = new ArrayList<>();
+      for(DataNode dn : cluster.getDataNodes()) {
+        hosts.add(dn.getDisplayName());
+      }
+
+      DatanodeDescriptor mockNode = new DatanodeDescriptor(
+          new DatanodeID("127.0.0.2", "127.0.0.2", "",
+              5000, 5001, 5002, 5003));
+
+      assertEquals("", Optional.ofNullable(mockNode.getDatanodeUuid()).orElse(""));
+      hosts.add(mockNode.getXferAddrWithHostname());
+      hostsFileWriter.initIncludeHosts(hosts.toArray(
+          new String[hosts.size()]));
+      fsn.getBlockManager().getDatanodeManager().refreshNodes(conf);
+      DatanodeManager dm = cluster.getNameNode().getNamesystem().
+          getBlockManager().getDatanodeManager();
+      LOG.info("Get all include nodes: {}", dm.getHostConfigManager().getIncludes());
+
+      // get attribute DeadNodes
+      String deadNodeInfo = (String) (mbs.getAttribute(mxbeanName,
+          "DeadNodes"));
+      assertEquals(fsn.getDeadNodes(), deadNodeInfo);
+      LOG.info("Get deadNode info: {}", deadNodeInfo);
+      Map<String, Map<String, Object>> deadNodes =
+          JsonUtils.parse(deadNodeInfo,
+              new TypeReference<Map<String, Map<String, Object>>>() {});
+      assertEquals(1, deadNodes.size());
+      for (Map<String, Object> deadNode : deadNodes.values()) {
+        assertTrue(deadNode.containsKey("lastContact"));
+        assertTrue(deadNode.containsKey("adminState"));
+        assertTrue(deadNode.containsKey("xferaddr"));
+        assertEquals("", deadNode.get("uuid"));
+      }
+    } finally {
+      if (cluster != null) {
+        cluster.shutdown();
+      }
+      hostsFileWriter.cleanup();
+    }
+  }
+
   void verifyTotalBlocksMetrics(long expectedTotalReplicatedBlocks,
       long expectedTotalECBlockGroups, long actualTotalBlocks)
       throws Exception {
     long expectedTotalBlocks = expectedTotalReplicatedBlocks
         + expectedTotalECBlockGroups;
-    assertEquals("Unexpected total blocks!", expectedTotalBlocks,
-        actualTotalBlocks);
+    assertEquals(expectedTotalBlocks, actualTotalBlocks, "Unexpected total blocks!");
 
     MBeanServer mbs = ManagementFactory.getPlatformMBeanServer();
     ObjectName replStateMBeanName = new ObjectName(
@@ -1143,10 +1212,10 @@ public class TestNameNodeMXBean {
         "TotalReplicatedBlocks");
     Long totalECBlockGroups = (Long) mbs.getAttribute(ecBlkGrpStateMBeanName,
         "TotalECBlockGroups");
-    assertEquals("Unexpected total replicated blocks!",
-        expectedTotalReplicatedBlocks, totalReplicaBlocks.longValue());
-    assertEquals("Unexpected total ec block groups!",
-        expectedTotalECBlockGroups, totalECBlockGroups.longValue());
+    assertEquals(expectedTotalReplicatedBlocks, totalReplicaBlocks.longValue(),
+        "Unexpected total replicated blocks!");
+    assertEquals(expectedTotalECBlockGroups, totalECBlockGroups.longValue(),
+        "Unexpected total ec block groups!");
     verifyEcClusterSetupVerifyResult(mbs);
   }
 
@@ -1166,13 +1235,20 @@ public class TestNameNodeMXBean {
         "VerifyECWithTopologyResult");
     ObjectMapper mapper = new ObjectMapper();
     Map<String, String> resultMap = mapper.readValue(result, Map.class);
-    Boolean isSupported = Boolean.parseBoolean(resultMap.get("isSupported"));
+    boolean isSupported = Boolean.parseBoolean(resultMap.get("isSupported"));
     String resultMessage = resultMap.get("resultMessage");
 
-    assertFalse("Test cluster does not support all enabled " +
-        "erasure coding policies.", isSupported);
+    assertFalse(isSupported,
+        "Test cluster does not support all enabled " + "erasure coding policies.");
     assertTrue(resultMessage.contains("3 racks are required for " +
         "the erasure coding policies: RS-6-3-1024k. " +
         "The number of racks is only 1."));
+  }
+
+  private static long toLong(Object value) {
+    if (value instanceof Number) {
+      return ((Number) value).longValue();
+    }
+    throw new IllegalArgumentException("Unsupported type: " + value.getClass());
   }
 }

@@ -110,10 +110,20 @@ class BlockPoolManager {
     }
   }
   
-  void shutDownAll(List<BPOfferService> bposList) throws InterruptedException {
+  /**
+   * Signal the services to stop without joining them. This is the first half
+   * of {@link #shutDownAll}, split out so a caller shutting down several
+   * DataNodes in one JVM can signal them all before joining any. stop() is
+   * idempotent, so shutDownAll may still be called afterwards.
+   */
+  void signalShutDownAll(List<BPOfferService> bposList) {
     for (BPOfferService bpos : bposList) {
       bpos.stop(); //interrupts the threads
     }
+  }
+
+  void shutDownAll(List<BPOfferService> bposList) throws InterruptedException {
+    signalShutDownAll(bposList);
     //now join
     for (BPOfferService bpos : bposList) {
       bpos.join();
@@ -306,13 +316,6 @@ class BlockPoolManager {
   @VisibleForTesting
   Map<String, BPOfferService> getBpByNameserviceId() {
     return bpByNameserviceId;
-  }
-
-  boolean isSlownodeByNameserviceId(String nsId) {
-    if (bpByNameserviceId.containsKey(nsId)) {
-      return bpByNameserviceId.get(nsId).isSlownode();
-    }
-    return false;
   }
 
   boolean isSlownodeByBlockPoolId(String bpId) {

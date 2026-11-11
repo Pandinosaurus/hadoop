@@ -170,7 +170,7 @@ public class TestContainerLauncherImpl {
   }
   
   @Test
-  @Timeout(5000)
+  @Timeout(value = 5)
   public void testHandle() throws Exception {
     LOG.info("STARTING testHandle");
     AppContext mockContext = mock(AppContext.class);
@@ -229,7 +229,7 @@ public class TestContainerLauncherImpl {
   }
   
   @Test
-  @Timeout(5000)
+  @Timeout(value = 5)
   public void testOutOfOrder() throws Exception {
     LOG.info("STARTING testOutOfOrder");
     AppContext mockContext = mock(AppContext.class);
@@ -304,7 +304,7 @@ public class TestContainerLauncherImpl {
   }
 
   @Test
-  @Timeout(5000)
+  @Timeout(value = 5)
   public void testMyShutdown() throws Exception {
     LOG.info("in test Shutdown");
 
@@ -357,7 +357,7 @@ public class TestContainerLauncherImpl {
   
   @SuppressWarnings({ "rawtypes", "unchecked" })
   @Test
-  @Timeout(5000)
+  @Timeout(value = 5)
   public void testContainerCleaned() throws Exception {
     LOG.info("STARTING testContainerCleaned");
     

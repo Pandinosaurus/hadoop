@@ -26,8 +26,11 @@ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.StoragePolicySatisfierMode;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyDefault;
 import org.apache.hadoop.hdfs.server.blockmanagement.BlockPlacementPolicyRackFaultTolerant;
+import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.RamDiskReplicaLruTracker;
 import org.apache.hadoop.hdfs.server.datanode.fsdataset.impl.ReservedSpaceCalculator;
+import org.apache.hadoop.hdfs.server.namenode.fgl.FSNLockManager;
+import org.apache.hadoop.hdfs.server.namenode.fgl.GlobalFSNamesystemLock;
 import org.apache.hadoop.hdfs.web.URLConnectionFactory;
 import org.apache.hadoop.http.HttpConfig;
 
@@ -123,6 +126,10 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       "dfs.datanode.data.write.bandwidthPerSec";
   // A value of zero indicates no limit
   public static final long DFS_DATANODE_DATA_WRITE_BANDWIDTHPERSEC_DEFAULT = 0;
+  public static final String DFS_DATANODE_DATA_READ_BANDWIDTHPERSEC_KEY =
+      "dfs.datanode.data.read.bandwidthPerSec";
+  // A value of zero indicates no limit
+  public static final long DFS_DATANODE_DATA_READ_BANDWIDTHPERSEC_DEFAULT = 0;
   public static final String DFS_DATANODE_EC_RECONSTRUCT_READ_BANDWIDTHPERSEC_KEY =
       "dfs.datanode.ec.reconstruct.read.bandwidthPerSec";
   public static final long DFS_DATANODE_EC_RECONSTRUCT_READ_BANDWIDTHPERSEC_DEFAULT =
@@ -187,6 +194,18 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       "dfs.namenode.path.based.cache.block.map.allocation.percent";
   public static final float    DFS_NAMENODE_PATH_BASED_CACHE_BLOCK_MAP_ALLOCATION_PERCENT_DEFAULT = 0.25f;
 
+  public static final String DFS_NAMENODE_CRM_CHECKLOCKTIME_ENABLE =
+      "dfs.namenode.crm.checklocktime.enable";
+  public static final boolean DFS_NAMENODE_CRM_CHECKLOCKTIME_DEFAULT = false;
+
+  public static final String DFS_NAMENODE_CRM_MAXLOCKTIME_MS =
+      "dfs.namenode.crm.maxlocktime.ms";
+  public static final long DFS_NAMENODE_CRM_MAXLOCKTIME_MS_DEFAULT = 1000;
+
+  public static final String DFS_NAMENODE_CRM_SLEEP_TIME_MS =
+      "dfs.namenode.crm.sleeptime.ms";
+  public static final long DFS_NAMENODE_CRM_SLEEP_TIME_MS_DEFAULT = 300;
+
   public static final int     DFS_NAMENODE_HTTP_PORT_DEFAULT =
       HdfsClientConfigKeys.DFS_NAMENODE_HTTP_PORT_DEFAULT;
   public static final String  DFS_NAMENODE_HTTP_ADDRESS_KEY =
@@ -240,6 +259,9 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final long    DFS_NAMENODE_CHECKPOINT_TXNS_DEFAULT = 1000000;
   public static final String  DFS_NAMENODE_CHECKPOINT_MAX_RETRIES_KEY = "dfs.namenode.checkpoint.max-retries";
   public static final int     DFS_NAMENODE_CHECKPOINT_MAX_RETRIES_DEFAULT = 3;
+  public static final String  DFS_NAMENODE_CHECKPOINT_PARALLEL_UPLOAD_ENABLED_KEY =
+      "dfs.namenode.checkpoint.parallel.upload.enabled";
+  public static final boolean DFS_NAMENODE_CHECKPOINT_PARALLEL_UPLOAD_ENABLED_DEFAULT = false;
   public static final String  DFS_NAMENODE_MISSING_CHECKPOINT_PERIODS_BEFORE_SHUTDOWN_KEY = "dfs.namenode.missing.checkpoint.periods.before.shutdown";
   public static final int     DFS_NAMENODE_MISSING_CHECKPOINT_PERIODS_BEFORE_SHUTDOWN_DEFAULT = 3;
   public static final String  DFS_NAMENODE_HEARTBEAT_RECHECK_INTERVAL_KEY =
@@ -271,6 +293,11 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       "dfs.namenode.redundancy.considerLoad.factor";
   public static final double
       DFS_NAMENODE_REDUNDANCY_CONSIDERLOAD_FACTOR_DEFAULT = 2.0;
+  public static final String DFS_NAMENODE_REDUNDANCY_CONSIDERLOADBYVOLUME_KEY =
+      "dfs.namenode.redundancy.considerLoadByVolume";
+  public static final boolean
+      DFS_NAMENODE_REDUNDANCY_CONSIDERLOADBYVOLUME_DEFAULT
+      = false;
   public static final String DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY =
       HdfsClientConfigKeys.DeprecatedKeys.DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_KEY;
   public static final int DFS_NAMENODE_REDUNDANCY_INTERVAL_SECONDS_DEFAULT = 3;
@@ -292,6 +319,13 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       "dfs.namenode.reconstruction.pending.timeout-sec";
   public static final int
       DFS_NAMENODE_RECONSTRUCTION_PENDING_TIMEOUT_SEC_DEFAULT = 300;
+
+  public static final String  DFS_NAMENODE_EXCESS_REDUNDANCY_TIMEOUT_SEC_KEY =
+      "dfs.namenode.excess.redundancy.timeout-sec";
+  public static final long DFS_NAMENODE_EXCESS_REDUNDANCY_TIMEOUT_SEC_DEAFULT = 3600;
+  public static final String DFS_NAMENODE_EXCESS_REDUNDANCY_TIMEOUT_CHECK_LIMIT
+      = "dfs.namenode.excess.redundancy.timeout.check.limit";
+  public static final long DFS_NAMENODE_EXCESS_REDUNDANCY_TIMEOUT_CHECK_LIMIT_DEFAULT = 1000;
 
   public static final String  DFS_NAMENODE_MAINTENANCE_REPLICATION_MIN_KEY =
       "dfs.namenode.maintenance.replication.min";
@@ -320,6 +354,12 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       "dfs.namenode.corrupt.block.delete.immediately.enabled";
   public static final boolean
       DFS_NAMENODE_CORRUPT_BLOCK_DELETE_IMMEDIATELY_ENABLED_DEFAULT = true;
+
+  public static final String
+      DFS_NAMENODE_RANDOM_NODE_ORDER_ENABLED =
+      "dfs.namenode.random.node.order.enabled";
+  public static final boolean
+      DFS_NAMENODE_RANDOM_NODE_ORDER_ENABLED_DEFAULT = false;
 
   @Deprecated
   public static final String  DFS_WEBHDFS_USER_PATTERN_KEY =
@@ -384,6 +424,9 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       DFS_NAMENODE_EDIT_LOG_AUTOROLL_MULTIPLIER_THRESHOLD_DEFAULT = 0.5f;
   public static final String  DFS_NAMENODE_EDIT_LOG_AUTOROLL_CHECK_INTERVAL_MS = "dfs.namenode.edit.log.autoroll.check.interval.ms";
   public static final int     DFS_NAMENODE_EDIT_LOG_AUTOROLL_CHECK_INTERVAL_MS_DEFAULT = 5*60*1000;
+  public static final String DFS_NAMENODE_EDIT_LOG_AUTOROLL_MAX_INTERVAL_MS =
+      "dfs.namenode.edit.log.autoroll.max.interval.ms";
+  public static final long DFS_NAMENODE_EDIT_LOG_AUTOROLL_MAX_INTERVAL_MS_DEFAULT = 0;
 
   public static final String  DFS_NAMENODE_LAZY_PERSIST_FILE_SCRUB_INTERVAL_SEC = "dfs.namenode.lazypersist.file.scrub.interval.sec";
   public static final int     DFS_NAMENODE_LAZY_PERSIST_FILE_SCRUB_INTERVAL_SEC_DEFAULT = 5 * 60;
@@ -452,7 +495,6 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   // Multiple dirs separated by "," are acceptable.
   public static final String DFS_DATANODE_PMEM_CACHE_DIRS_KEY =
       "dfs.datanode.pmem.cache.dirs";
-  public static final String DFS_DATANODE_PMEM_CACHE_DIRS_DEFAULT = "";
   public static final String  DFS_DATANODE_PMEM_CACHE_RECOVERY_KEY =
       "dfs.datanode.pmem.cache.recovery";
   public static final boolean DFS_DATANODE_PMEM_CACHE_RECOVERY_DEFAULT =
@@ -729,16 +771,12 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       "dfs.namenode.hosts.provider.classname";
   public static final String  DFS_HOSTS = "dfs.hosts";
   public static final String  DFS_HOSTS_EXCLUDE = "dfs.hosts.exclude";
+  public static final String  DFS_HOSTS_TIMEOUT = "dfs.hosts.timeout";
+  public static final int     DFS_HOSTS_TIMEOUT_DEFAULT = 0;
   public static final String  DFS_NAMENODE_AUDIT_LOGGERS_KEY = "dfs.namenode.audit.loggers";
   public static final String  DFS_NAMENODE_DEFAULT_AUDIT_LOGGER_NAME = "default";
   public static final String  DFS_NAMENODE_AUDIT_LOG_TOKEN_TRACKING_ID_KEY = "dfs.namenode.audit.log.token.tracking.id";
   public static final boolean DFS_NAMENODE_AUDIT_LOG_TOKEN_TRACKING_ID_DEFAULT = false;
-  public static final String  DFS_NAMENODE_AUDIT_LOG_ASYNC_KEY = "dfs.namenode.audit.log.async";
-  public static final boolean DFS_NAMENODE_AUDIT_LOG_ASYNC_DEFAULT = false;
-  public static final String  DFS_NAMENODE_AUDIT_LOG_ASYNC_BLOCKING_KEY = "dfs.namenode.audit.log.async.blocking";
-  public static final boolean DFS_NAMENODE_AUDIT_LOG_ASYNC_BLOCKING_DEFAULT = true;
-  public static final String  DFS_NAMENODE_AUDIT_LOG_ASYNC_BUFFER_SIZE_KEY = "dfs.namenode.audit.log.async.buffer.size";
-  public static final int     DFS_NAMENODE_AUDIT_LOG_ASYNC_BUFFER_SIZE_DEFAULT = 128;
   public static final String  DFS_NAMENODE_AUDIT_LOG_DEBUG_CMDLIST = "dfs.namenode.audit.log.debug.cmdlist";
   public static final String  DFS_NAMENODE_METRICS_LOGGER_PERIOD_SECONDS_KEY =
       "dfs.namenode.metrics.logger.period.seconds";
@@ -787,6 +825,8 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final String  DFS_BALANCER_ADDRESS_DEFAULT= "0.0.0.0:0";
   public static final String  DFS_BALANCER_KEYTAB_FILE_KEY = "dfs.balancer.keytab.file";
   public static final String  DFS_BALANCER_KERBEROS_PRINCIPAL_KEY = "dfs.balancer.kerberos.principal";
+  public static final String DFS_BALANCER_KERBEROS_INTERNAL_SPNEGO_PRINCIPAL_KEY =
+      "dfs.balancer.kerberos.internal.spnego.principal";
   public static final String  DFS_BALANCER_BLOCK_MOVE_TIMEOUT = "dfs.balancer.block-move.timeout";
   public static final int     DFS_BALANCER_BLOCK_MOVE_TIMEOUT_DEFAULT = 0;
   public static final String  DFS_BALANCER_MAX_NO_MOVE_INTERVAL_KEY = "dfs.balancer.max-no-move-interval";
@@ -797,6 +837,19 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final long    DFS_BALANCER_SERVICE_INTERVAL_DEFAULT = TimeUnit.MINUTES.toMillis(5); //5 mins
   public static final String  DFS_BALANCER_SERVICE_RETRIES_ON_EXCEPTION = "dfs.balancer.service.retries.on.exception";
   public static final int     DFS_BALANCER_SERVICE_RETRIES_ON_EXCEPTION_DEFAULT = 5;
+  public static final String DFS_BALANCER_HTTPSERVER_ENABLED_KEY =
+      "dfs.balancer.httpserver.enabled";
+  public static final Boolean DFS_BALANCER_HTTPSERVER_ENABLED_DEFAULT = false;
+  public static final String DFS_BALANCER_HTTP_ADDRESS_KEY = "dfs.balancer.http-address";
+  public static final int DFS_BALANCER_HTTP_PORT_DEFAULT = 8590;
+  public static final String DFS_BALANCER_HTTP_BIND_HOST_KEY = "dfs.balancer.http-bind-host";
+  public static final String DFS_BALANCER_HTTP_ADDRESS_DEFAULT =
+      "0.0.0.0:" + DFS_BALANCER_HTTP_PORT_DEFAULT;
+  public static final String DFS_BALANCER_HTTPS_ADDRESS_KEY = "dfs.balancer.https-address";
+  public static final int DFS_BALANCER_HTTPS_PORT_DEFAULT = 8591;
+  public static final String DFS_BALANCER_HTTPS_BIND_HOST_KEY = "dfs.balancer.https-bind-host";
+  public static final String DFS_BALANCER_HTTPS_ADDRESS_DEFAULT =
+      "0.0.0.0:" + DFS_BALANCER_HTTPS_PORT_DEFAULT;
 
   public static final String  DFS_MOVER_MOVEDWINWIDTH_KEY = "dfs.mover.movedWinWidth";
   public static final long    DFS_MOVER_MOVEDWINWIDTH_DEFAULT = 5400*1000L;
@@ -1029,6 +1082,10 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final String  DFS_NAMENODE_INODE_ATTRIBUTES_PROVIDER_KEY = "dfs.namenode.inode.attributes.provider.class";
   public static final String  DFS_NAMENODE_INODE_ATTRIBUTES_PROVIDER_BYPASS_USERS_KEY = "dfs.namenode.inode.attributes.provider.bypass.users";
   public static final String  DFS_NAMENODE_INODE_ATTRIBUTES_PROVIDER_BYPASS_USERS_DEFAULT = "";
+  public static final String  DFS_NAMENODE_LOCK_MODEL_PROVIDER_KEY =
+      "dfs.namenode.lock.model.provider.class";
+  public static final Class<? extends FSNLockManager>  DFS_NAMENODE_LOCK_MODEL_PROVIDER_DEFAULT =
+      GlobalFSNamesystemLock.class;
 
   public static final String  DFS_DATANODE_BP_READY_TIMEOUT_KEY = "dfs.datanode.bp-ready.timeout";
   public static final long    DFS_DATANODE_BP_READY_TIMEOUT_DEFAULT = 20;
@@ -1055,6 +1112,10 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       = "dfs.blockreport.incremental.intervalMsec";
   public static final long    DFS_BLOCKREPORT_INCREMENTAL_INTERVAL_MSEC_DEFAULT
       = 0;
+  public static final String  DFS_DATANODE_IBR_MAX_PENDING_BLOCKS_KEY
+      = "dfs.datanode.ibr.max.pending.blocks";
+  public static final long    DFS_DATANODE_IBR_MAX_PENDING_BLOCKS_DEFAULT
+      = 1000000;
   public static final String  DFS_BLOCKREPORT_INTERVAL_MSEC_KEY = "dfs.blockreport.intervalMsec";
   public static final long    DFS_BLOCKREPORT_INTERVAL_MSEC_DEFAULT = 6 * 60 * 60 * 1000;
   public static final String  DFS_BLOCKREPORT_INITIAL_DELAY_KEY = "dfs.blockreport.initialDelay";
@@ -1065,6 +1126,9 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final int     DFS_NAMENODE_MAX_FULL_BLOCK_REPORT_LEASES_DEFAULT = 6;
   public static final String  DFS_NAMENODE_FULL_BLOCK_REPORT_LEASE_LENGTH_MS = "dfs.namenode.full.block.report.lease.length.ms";
   public static final long    DFS_NAMENODE_FULL_BLOCK_REPORT_LEASE_LENGTH_MS_DEFAULT = 5L * 60L * 1000L;
+  public static final String  DFS_BLOCKREPORT_REJECT_INVALID_LEASE_KEY
+      = "dfs.blockreport.reject.invalid.lease";
+  public static final boolean DFS_BLOCKREPORT_REJECT_INVALID_LEASE_DEFAULT = true;
   public static final String  DFS_CACHEREPORT_INTERVAL_MSEC_KEY = "dfs.cachereport.intervalMsec";
   public static final long    DFS_CACHEREPORT_INTERVAL_MSEC_DEFAULT = 10 * 1000;
   public static final String  DFS_BLOCK_INVALIDATE_LIMIT_KEY = "dfs.block.invalidate.limit";
@@ -1175,6 +1239,8 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final String  DFS_NAMENODE_PLUGINS_KEY = "dfs.namenode.plugins";
   public static final String  DFS_WEB_UGI_KEY = "dfs.web.ugi";
   public static final String  DFS_NAMENODE_STARTUP_KEY = "dfs.namenode.startup";
+  public static final String  DFS_NAMENODE_OBSERVER_ENABLED_KEY = "dfs.namenode.observer.enabled";
+  public static final boolean DFS_NAMENODE_OBSERVER_ENABLED_DEFAULT = false;
   public static final String  DFS_DATANODE_KEYTAB_FILE_KEY = "dfs.datanode.keytab.file";
   public static final String  DFS_DATANODE_KERBEROS_PRINCIPAL_KEY =
       HdfsClientConfigKeys.DFS_DATANODE_KERBEROS_PRINCIPAL_KEY;
@@ -1237,6 +1303,12 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
       DFS_NAMENODE_AVAILABLE_SPACE_BLOCK_PLACEMENT_POLICY_BALANCED_SPACE_TOLERANCE_DEFAULT =
       5;
   public static final String
+      DFS_NAMENODE_AVAILABLE_SPACE_BLOCK_PLACEMENT_POLICY_BALANCED_SPACE_TOLERANCE_LIMIT_KEY =
+      "dfs.namenode.available-space-block-placement-policy.balanced-space-tolerance-limit";
+  public static final int
+      DFS_NAMENODE_AVAILABLE_SPACE_BLOCK_PLACEMENT_POLICY_BALANCED_SPACE_TOLERANCE_LIMIT_DEFAULT =
+      100;
+  public static final String
       DFS_NAMENODE_AVAILABLE_SPACE_RACK_FAULT_TOLERANT_BLOCK_PLACEMENT_POLICY_BALANCED_SPACE_PREFERENCE_FRACTION_KEY =
       "dfs.namenode.available-space-rack-fault-tolerant-block-placement-policy"
           + ".balanced-space-preference-fraction";
@@ -1265,6 +1337,11 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final boolean
       DFS_NAMENODE_BLOCKPLACEMENTPOLICY_EXCLUDE_SLOW_NODES_ENABLED_DEFAULT =
       false;
+
+  public static final String DFS_NAMENODE_BLOCKPLACEMENTPOLICY_MIN_BLOCKS_FOR_WRITE_KEY =
+      "dfs.namenode.block-placement.min-blocks-for.write";
+  public static final int DFS_NAMENODE_BLOCKPLACEMENTPOLICY_MIN_BLOCKS_FOR_WRITE_DEFAULT =
+      HdfsServerConstants.MIN_BLOCKS_FOR_WRITE;
 
   public static final String DFS_NAMENODE_GC_TIME_MONITOR_ENABLE =
       "dfs.namenode.gc.time.monitor.enable";
@@ -1306,6 +1383,8 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final boolean DFS_HA_STANDBY_CHECKPOINTS_DEFAULT = true;
   public static final String DFS_HA_LOGROLL_PERIOD_KEY = "dfs.ha.log-roll.period";
   public static final int DFS_HA_LOGROLL_PERIOD_DEFAULT = 2 * 60; // 2m
+  public static final String DFS_HA_LOG_ROLL_ENABLED_KEY = "dfs.ha.log-roll.enabled";
+  public static final boolean DFS_HA_LOG_ROLL_ENABLED_DEFAULT = true;
   public static final String DFS_HA_TAILEDITS_PERIOD_KEY = "dfs.ha.tail-edits.period";
   public static final int DFS_HA_TAILEDITS_PERIOD_DEFAULT = 60; // 1m
   public static final String DFS_HA_TAILEDITS_PERIOD_BACKOFF_MAX_KEY = "dfs.ha.tail-edits.period.backoff-max";
@@ -1327,6 +1406,9 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final int DFS_HA_ZKFC_PORT_DEFAULT = 8019;
   public static final String DFS_HA_ZKFC_NN_HTTP_TIMEOUT_KEY = "dfs.ha.zkfc.nn.http.timeout.ms";
   public static final int DFS_HA_ZKFC_NN_HTTP_TIMEOUT_KEY_DEFAULT = 20000;
+  /** Enable Zookeeper SSL/TLS communication. */
+  public static final String ZK_CLIENT_SSL_ENABLED = "dfs.ha.zkfc.client.ssl.enabled";
+  public static final boolean DEFAULT_ZK_CLIENT_SSL_ENABLED = false;
   public static final String DFS_HA_NN_NOT_BECOME_ACTIVE_IN_SAFEMODE =
       "dfs.ha.nn.not-become-active-in-safemode";
   public static final boolean DFS_HA_NN_NOT_BECOME_ACTIVE_IN_SAFEMODE_DEFAULT =
@@ -1382,6 +1464,9 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final int DFS_NAMENODE_EDEKCACHELOADER_INTERVAL_MS_DEFAULT = 1000;
   public static final String DFS_NAMENODE_EDEKCACHELOADER_INITIAL_DELAY_MS_KEY = "dfs.namenode.edekcacheloader.initial.delay.ms";
   public static final int DFS_NAMENODE_EDEKCACHELOADER_INITIAL_DELAY_MS_DEFAULT = 3000;
+  public static final String DFS_NAMENODE_EDEKCACHELOADER_MAX_RETRIES_KEY =
+      "dfs.namenode.edekcacheloader.max-retries";
+  public static final int DFS_NAMENODE_EDEKCACHELOADER_MAX_RETRIES_DEFAULT = 10;
   public static final String DFS_NAMENODE_REENCRYPT_SLEEP_INTERVAL_KEY = "dfs.namenode.reencrypt.sleep.interval";
   public static final String DFS_NAMENODE_REENCRYPT_SLEEP_INTERVAL_DEFAULT = "1m";
   public static final String DFS_NAMENODE_REENCRYPT_BATCH_SIZE_KEY = "dfs.namenode.reencrypt.batch.size";
@@ -1428,6 +1513,9 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final String DFS_JOURNALNODE_SYNC_INTERVAL_KEY =
       "dfs.journalnode.sync.interval";
   public static final long DFS_JOURNALNODE_SYNC_INTERVAL_DEFAULT = 2*60*1000L;
+  public static final String DFS_JOURNALNODE_ENABLE_SYNC_FORMAT_KEY =
+      "dfs.journalnode.enable.sync.format";
+  public static final boolean DFS_JOURNALNODE_ENABLE_SYNC_FORMAT_DEFAULT = false;
   public static final String DFS_JOURNALNODE_EDIT_CACHE_SIZE_KEY =
       "dfs.journalnode.edit-cache-size.bytes";
 
@@ -1563,6 +1651,8 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final boolean DFS_PIPELINE_ECN_ENABLED_DEFAULT = false;
   public static final String DFS_PIPELINE_SLOWNODE_ENABLED = "dfs.pipeline.slownode";
   public static final boolean DFS_PIPELINE_SLOWNODE_ENABLED_DEFAULT = false;
+  public static final String DFS_PIPELINE_CONGESTION_RATIO = "dfs.pipeline.congestion.ratio";
+  public static final double DFS_PIPELINE_CONGESTION_RATIO_DEFAULT = 1.5;
 
   // Key Provider Cache Expiry
   public static final String DFS_DATANODE_BLOCK_PINNING_ENABLED =
@@ -2032,5 +2122,10 @@ public class DFSConfigKeys extends CommonConfigurationKeys {
   public static final long DFS_LEASE_HARDLIMIT_DEFAULT =
       HdfsClientConfigKeys.DFS_LEASE_HARDLIMIT_DEFAULT;
 
-
+  /**
+   * List of packages from which Step implementations will be loaded when deserializing
+   * Node Plans: {@value}.
+   */
+  public static final String SUPPORTED_PACKAGES_CONFIG_NAME =
+      "dfs.nodeplan.steps.supported.packages";
 }

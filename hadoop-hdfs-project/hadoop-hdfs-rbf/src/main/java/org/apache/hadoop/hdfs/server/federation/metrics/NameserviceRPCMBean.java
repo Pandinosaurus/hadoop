@@ -37,4 +37,9 @@ public interface NameserviceRPCMBean {
 
   long getProxyOpNoNamenodes();
 
+  long getProxyOpPermitRejected();
+
+  long getProxyOpPermitAccepted();
+
+  int getAsyncHandlerQueueSize();
 }

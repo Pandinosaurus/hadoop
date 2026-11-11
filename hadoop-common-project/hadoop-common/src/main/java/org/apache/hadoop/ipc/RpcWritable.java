@@ -33,7 +33,14 @@ import org.apache.hadoop.thirdparty.protobuf.CodedInputStream;
 import org.apache.hadoop.thirdparty.protobuf.CodedOutputStream;
 import org.apache.hadoop.thirdparty.protobuf.Message;
 
-// note anything marked public is solely for access by SaslRpcClient
+/**
+ * Marshalling support, for hadoop shaded protobuf and legacy
+ * protobuf 2.5.
+ * It originally supported hadoop Writables for the WritableRPCEngine;
+ * that is no removed. All that is retained is the name.
+ * Anything marked public is solely for access by SaslRpcClient
+ */
+// note
 @InterfaceAudience.Private
 public abstract class RpcWritable implements Writable {
 
@@ -41,9 +48,11 @@ public abstract class RpcWritable implements Writable {
     if (o instanceof RpcWritable) {
       return (RpcWritable)o;
     } else if (o instanceof Message) {
+      // hadoop shaded protobuf
       return new ProtobufWrapper((Message)o);
-    } else if (o instanceof com.google.protobuf.Message) {
-      return new ProtobufWrapperLegacy((com.google.protobuf.Message) o);
+    } else if (ProtobufWrapperLegacy.isUnshadedProtobufMessage(o)) {
+      // unshaded protobuf
+      return new ProtobufWrapperLegacy(o);
     } else if (o instanceof Writable) {
       return new WritableWrapper((Writable)o);
     }
@@ -64,7 +73,7 @@ public abstract class RpcWritable implements Writable {
   abstract void writeTo(ResponseBuffer out) throws IOException;
   abstract <T> T readFrom(ByteBuffer bb) throws IOException;
 
-  // adapter for Writables.
+  // adapter for Writables. Used for RPC_BUILTIN calls.
   static class WritableWrapper extends RpcWritable {
     private final Writable writable;
 
@@ -122,49 +131,6 @@ public abstract class RpcWritable implements Writable {
       // that internally buffer.
       CodedInputStream cis = CodedInputStream.newInstance(
           bb.array(), bb.position() + bb.arrayOffset(), bb.remaining());
-      try {
-        cis.pushLimit(cis.readRawVarint32());
-        message = message.getParserForType().parseFrom(cis);
-        cis.checkLastTagWas(0);
-      } finally {
-        // advance over the bytes read.
-        bb.position(bb.position() + cis.getTotalBytesRead());
-      }
-      return (T)message;
-    }
-  }
-
-  // adapter for Protobufs.
-  static class ProtobufWrapperLegacy extends RpcWritable {
-    private com.google.protobuf.Message message;
-
-    ProtobufWrapperLegacy(com.google.protobuf.Message message) {
-      this.message = message;
-    }
-
-    com.google.protobuf.Message getMessage() {
-      return message;
-    }
-
-    @Override
-    void writeTo(ResponseBuffer out) throws IOException {
-      int length = message.getSerializedSize();
-      length += com.google.protobuf.CodedOutputStream.
-          computeUInt32SizeNoTag(length);
-      out.ensureCapacity(length);
-      message.writeDelimitedTo(out);
-    }
-
-    @SuppressWarnings("unchecked")
-    @Override
-    <T> T readFrom(ByteBuffer bb) throws IOException {
-      // using the parser with a byte[]-backed coded input stream is the
-      // most efficient way to deserialize a protobuf.  it has a direct
-      // path to the PB ctor that doesn't create multi-layered streams
-      // that internally buffer.
-      com.google.protobuf.CodedInputStream cis =
-          com.google.protobuf.CodedInputStream.newInstance(
-              bb.array(), bb.position() + bb.arrayOffset(), bb.remaining());
       try {
         cis.pushLimit(cis.readRawVarint32());
         message = message.getParserForType().parseFrom(cis);

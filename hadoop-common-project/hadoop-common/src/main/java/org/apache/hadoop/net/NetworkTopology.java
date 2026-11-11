@@ -51,7 +51,7 @@ public class NetworkTopology {
       LoggerFactory.getLogger(NetworkTopology.class);
 
   private static final char PATH_SEPARATOR = '/';
-  private static final String PATH_SEPARATOR_STR = "/";
+  protected static final String PATH_SEPARATOR_STR = "/";
   private static final String ROOT = "/";
   private static final AtomicReference<Random> RANDOM_REF =
       new AtomicReference<>();
@@ -1130,5 +1130,23 @@ public class NetworkTopology {
     }
     numOfEmptyRacks = count;
     LOG.debug("Current numOfEmptyRacks is {}", numOfEmptyRacks);
+  }
+
+  /**
+   * Randomly permute the active nodes of the node array.
+   *
+   * @param nodes     Available replicas with the requested data
+   * @param activeLen Number of active nodes at the front of the array
+   */
+  public void shuffle(Node[] nodes, int activeLen) {
+    List<Node> list = new ArrayList<>(activeLen);
+    for (int i = 0; i < activeLen; i++) {
+      list.add(nodes[i]);
+    }
+    Collections.shuffle(list, getRandom());
+
+    for (int i = 0; i < activeLen; i++) {
+      nodes[i] = list.get(i);
+    }
   }
 }

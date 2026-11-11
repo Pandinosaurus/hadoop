@@ -31,6 +31,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
+import org.mockito.junit.jupiter.MockitoExtension;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
@@ -66,7 +67,6 @@ import org.apache.hadoop.yarn.factories.RecordFactory;
 import org.apache.hadoop.yarn.factory.providers.RecordFactoryProvider;
 import org.apache.hadoop.yarn.util.ControlledClock;
 import org.apache.hadoop.yarn.util.SystemClock;
-import org.mockito.junit.jupiter.MockitoExtension;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -181,7 +181,7 @@ public class TestTaskAttemptListenerImpl {
   }
 
   @Test
-  @Timeout(5000)
+  @Timeout(value = 5)
   public void testGetTask() throws IOException {
     configureMocks();
     startListener(false);
@@ -190,12 +190,12 @@ public class TestTaskAttemptListenerImpl {
     //The JVM ID has not been registered yet so we should kill it.
     JvmContext context = new JvmContext();
 
-    context.jvmId = id;
+    context.jvmId = id; 
     JvmTask result = listener.getTask(context);
     assertNotNull(result);
     assertTrue(result.shouldDie);
 
-    // Verify ask after registration but before launch.
+    // Verify ask after registration but before launch. 
     // Don't kill, should be null.
     //Now put a task with the ID
     listener.registerPendingTask(task, wid);
@@ -240,7 +240,7 @@ public class TestTaskAttemptListenerImpl {
   }
 
   @Test
-  @Timeout(5000)
+  @Timeout(value = 5)
   public void testJVMId() {
 
     JVMId jvmid = new JVMId("test", 1, true, 2);
@@ -250,7 +250,7 @@ public class TestTaskAttemptListenerImpl {
   }
 
   @Test
-  @Timeout(10000)
+  @Timeout(value = 10)
   public void testGetMapCompletionEvents() throws IOException {
     TaskAttemptCompletionEvent[] empty = {};
     TaskAttemptCompletionEvent[] taskEvents = {
@@ -310,7 +310,7 @@ public class TestTaskAttemptListenerImpl {
   }
 
   @Test
-  @Timeout(10000)
+  @Timeout(value = 10)
   public void testCommitWindow() throws IOException {
     SystemClock clock = SystemClock.getInstance();
 

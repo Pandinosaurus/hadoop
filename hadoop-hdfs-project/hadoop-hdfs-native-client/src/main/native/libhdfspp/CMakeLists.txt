@@ -26,9 +26,9 @@
 
 project (libhdfspp)
 
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.5)
 
-find_package (Boost 1.72.0 REQUIRED COMPONENTS date_time)
+find_package (Boost 1.86.0 REQUIRED COMPONENTS date_time)
 
 enable_testing()
 set(CMAKE_CXX_STANDARD 17)
@@ -43,9 +43,70 @@ SET(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH};${CYRUS_SASL_DIR};${GSASL_DIR};$ENV{
 # Specify PROTOBUF_HOME so that find_package picks up the correct version
 SET(CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH};$ENV{PROTOBUF_HOME}")
 
+if (BUILD_SHARED_LIBS AND MSVC)
+  # On MSVC Abseil is bundled into a single DLL.
+  # This condition is necessary as of abseil 20230125.3 when abseil is consumed via add_subdirectory,
+  # the abseil_dll target  is named abseil_dll, while if abseil is consumed via find_package, the target
+  # is called absl::abseil_dll
+  # Once https://github.com/abseil/abseil-cpp/pull/1466 is merged and released in the minimum version of
+  # abseil required by protobuf, it is possible to always link absl::abseil_dll and absl::abseil_test_dll
+  # and remove the if
+  if(protobuf_ABSL_PROVIDER STREQUAL "package")
+    set(protobuf_ABSL_USED_TARGETS absl::abseil_dll)
+    set(protobuf_ABSL_USED_TEST_TARGETS absl::abseil_test_dll)
+  else()
+    set(protobuf_ABSL_USED_TARGETS abseil_dll)
+    set(protobuf_ABSL_USED_TEST_TARGETS abseil_test_dll)
+  endif()
+else()
+  set(protobuf_ABSL_USED_TARGETS
+    absl::absl_check
+    absl::absl_log
+    absl::algorithm
+    absl::base
+    absl::bind_front
+    absl::bits
+    absl::btree
+    absl::cleanup
+    absl::cord
+    absl::core_headers
+    absl::debugging
+    absl::die_if_null
+    absl::dynamic_annotations
+    absl::flags
+    absl::flat_hash_map
+    absl::flat_hash_set
+    absl::function_ref
+    absl::hash
+    absl::layout
+    absl::log_initialize
+    absl::log_severity
+    absl::memory
+    absl::node_hash_map
+    absl::node_hash_set
+    absl::optional
+    absl::span
+    absl::status
+    absl::statusor
+    absl::strings
+    absl::synchronization
+    absl::time
+    absl::type_traits
+    absl::utility
+    absl::variant
+    utf8_range::utf8_validity
+    utf8_range::utf8_range
+  )
+  set(protobuf_ABSL_USED_TEST_TARGETS
+    absl::scoped_mock_log
+  )
+endif ()
+
 find_package(Doxygen)
 find_package(OpenSSL REQUIRED)
 find_package(Protobuf REQUIRED)
+find_package(absl REQUIRED)
+find_package(utf8_range REQUIRED)
 find_package(CyrusSASL)
 find_package(GSasl)
 find_package(Threads)
@@ -88,8 +149,15 @@ endif (NOT THREAD_LOCAL_SUPPORTED)
 # Check if PROTOC library was compiled with the compatible compiler by trying
 # to compile some dummy code
 unset (PROTOC_IS_COMPATIBLE CACHE)
+# Save whatever the checks above left in place; the Protobuf check below needs
+# its own requirements, and they are restored once it is done.
+set (SAVED_CMAKE_REQUIRED_INCLUDES ${CMAKE_REQUIRED_INCLUDES})
+set (SAVED_CMAKE_REQUIRED_LIBRARIES ${CMAKE_REQUIRED_LIBRARIES})
 set (CMAKE_REQUIRED_INCLUDES ${PROTOBUF_INCLUDE_DIRS})
-set (CMAKE_REQUIRED_LIBRARIES ${PROTOBUF_LIBRARY} ${PROTOBUF_PROTOC_LIBRARY})
+set (CMAKE_REQUIRED_LIBRARIES
+  protobuf::libprotobuf
+  protobuf::libprotoc
+  ${protobuf_ABSL_USED_TARGETS})
 check_cxx_source_compiles(
     "#include <google/protobuf/io/printer.h>
     #include <string>
@@ -106,6 +174,16 @@ if (NOT PROTOC_IS_COMPATIBLE)
   with the same (or compatible) compiler. Normally only the same major versions of the same \
   compiler are compatible with each other.")
 endif (NOT PROTOC_IS_COMPATIBLE)
+
+# The check above leaves CMAKE_REQUIRED_INCLUDES and CMAKE_REQUIRED_LIBRARIES
+# pointing at the Protobuf and Abseil targets. Abseil carries C++ feature
+# requirements, which a C-language check_symbol_exists() below cannot satisfy
+# under the Visual Studio generator. Restore the previous values so later
+# checks run against the state they expect.
+set (CMAKE_REQUIRED_INCLUDES ${SAVED_CMAKE_REQUIRED_INCLUDES})
+set (CMAKE_REQUIRED_LIBRARIES ${SAVED_CMAKE_REQUIRED_LIBRARIES})
+unset (SAVED_CMAKE_REQUIRED_INCLUDES)
+unset (SAVED_CMAKE_REQUIRED_LIBRARIES)
 
 find_program(MEMORYCHECK_COMMAND valgrind HINTS ${VALGRIND_DIR} )
 set(MEMORYCHECK_COMMAND_OPTIONS "--trace-children=no --leak-check=full --error-exitcode=1 --suppressions=${PROJECT_SOURCE_DIR}/tests/memcheck.supp")
@@ -279,7 +357,8 @@ if (HADOOP_BUILD AND NOT MSVC)
   hadoop_add_dual_library(hdfspp ${EMPTY_FILE_CC} ${LIBHDFSPP_ALL_OBJECTS})
   hadoop_target_link_dual_libraries(hdfspp
     ${LIB_DL}
-    ${PROTOBUF_LIBRARY}
+    protobuf::libprotobuf
+    ${protobuf_ABSL_USED_TARGETS}
     ${OPENSSL_LIBRARIES}
     ${SASL_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}
@@ -290,7 +369,8 @@ else (HADOOP_BUILD AND NOT MSVC)
   add_library(hdfspp_static STATIC ${EMPTY_FILE_CC} ${LIBHDFSPP_ALL_OBJECTS})
   target_link_libraries(hdfspp_static PUBLIC
     ${LIB_DL}
-    ${PROTOBUF_LIBRARY}
+    protobuf::libprotobuf
+    ${protobuf_ABSL_USED_TARGETS}
     ${OPENSSL_LIBRARIES}
     ${SASL_LIBRARIES}
     ${CMAKE_THREAD_LIBS_INIT}

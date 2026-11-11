@@ -60,8 +60,7 @@ public class ZKDelegationTokenSecretManagerImpl extends
   // currentTokenMap
   private final Set<AbstractDelegationTokenIdentifier> localTokenCache =
       new HashSet<>();
-  // Native zk client for getting all tokens
-  private ZooKeeper zookeeper;
+
   private final String TOKEN_PATH = "/" + zkClient.getNamespace()
       + ZK_DTSM_TOKENS_ROOT;
   // The flag used to issue an extra check before deletion
@@ -102,16 +101,6 @@ public class ZKDelegationTokenSecretManagerImpl extends
           zkClient.create().creatingParentsIfNeeded()
               .withMode(CreateMode.PERSISTENT)
               .forPath(ZK_DTSM_TOKENS_ROOT);
-        }
-        // Set up zookeeper client
-        try {
-          zookeeper = zkClient.getZookeeperClient().getZooKeeper();
-        } catch (Exception e) {
-          LOG.info("Cannot get zookeeper client ", e);
-        } finally {
-          if (zookeeper == null) {
-            throw new IOException("Zookeeper client is null");
-          }
         }
 
         LOG.info("Start loading token cache");
@@ -163,7 +152,7 @@ public class ZKDelegationTokenSecretManagerImpl extends
     // millions of tokens
     List<String> zkTokens;
     try {
-      zkTokens = zookeeper.getChildren(TOKEN_PATH, false);
+      zkTokens = getZooKeeperClient().getChildren(TOKEN_PATH, false);
     } catch (KeeperException | InterruptedException e) {
       throw new IOException("Tokens cannot be fetched from path "
           + TOKEN_PATH, e);
@@ -218,8 +207,27 @@ public class ZKDelegationTokenSecretManagerImpl extends
   @Override
   protected void addOrUpdateToken(AbstractDelegationTokenIdentifier ident,
       DelegationTokenInformation info, boolean isUpdate) throws Exception {
-    // Store the data in local memory first
-    currentTokens.put(ident, info);
+    // Creation persists outside apiLock. Do not expose an unpersisted token
+    // or publish it after persistence, potentially undoing a cancellation.
+    // Watchers, rebuilds, and cache-miss reads populate newly created tokens.
+    if (isUpdate) {
+      currentTokens.put(ident, info);
+    }
     super.addOrUpdateToken(ident, info, isUpdate);
+  }
+
+  private ZooKeeper getZooKeeperClient() throws IOException {
+    // get zookeeper client
+    ZooKeeper zookeeper = null;
+    try {
+      zookeeper = zkClient.getZookeeperClient().getZooKeeper();
+    } catch (Exception e) {
+      LOG.info("Cannot get zookeeper client ", e);
+    } finally {
+      if (zookeeper == null) {
+        throw new IOException("Zookeeper client is null");
+      }
+    }
+    return zookeeper;
   }
 }

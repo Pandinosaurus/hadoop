@@ -142,7 +142,7 @@ public class CommonConfigurationKeys extends CommonConfigurationKeysPublic {
 
   /** Default value for IO_COMPRESSION_CODEC_LZO_BUFFERSIZE_KEY */
   public static final int     IO_COMPRESSION_CODEC_LZO_BUFFERSIZE_DEFAULT =
-    64*1024;
+    256*1024;
 
   /** Internal buffer size for Snappy compressor/decompressors */
   public static final String IO_COMPRESSION_CODEC_SNAPPY_BUFFERSIZE_KEY =
@@ -167,6 +167,17 @@ public class CommonConfigurationKeys extends CommonConfigurationKeysPublic {
    * buffer size that the library recommends. */
   public static final int
       IO_COMPRESSION_CODEC_ZSTD_BUFFER_SIZE_DEFAULT = 0;
+
+  /** ZStandard number of compression worker threads.
+   * A value of 0 (the default) disables worker threads and runs
+   * compression on the calling thread, matching the upstream zstd
+   * default. A positive value enables multi-threaded compression with
+   * the specified number of background workers. */
+  public static final String IO_COMPRESSION_CODEC_ZSTD_WORKERS_KEY =
+      "io.compression.codec.zstd.workers";
+
+  /** Default value for IO_COMPRESSION_CODEC_ZSTD_WORKERS_KEY (disabled). */
+  public static final int IO_COMPRESSION_CODEC_ZSTD_WORKERS_DEFAULT = 0;
 
   /** Internal buffer size for Lz4 compressor/decompressors */
   public static final String IO_COMPRESSION_CODEC_LZ4_BUFFERSIZE_KEY =
@@ -243,6 +254,11 @@ public class CommonConfigurationKeys extends CommonConfigurationKeysPublic {
       "hadoop.security.token.service.use_ip";
   public static final boolean HADOOP_SECURITY_TOKEN_SERVICE_USE_IP_DEFAULT =
       true;
+  public static final String
+      HADOOP_SECURITY_HOSTNAME_CACHE_EXPIRE_INTERVAL_SECONDS =
+      "hadoop.security.hostname.cache.expire-interval.seconds";
+  public static final int
+      HADOOP_SECURITY_HOSTNAME_CACHE_EXPIRE_INTERVAL_SECONDS_DEFAULT = 0;
 
   /**
    * @see
@@ -417,6 +433,19 @@ public class CommonConfigurationKeys extends CommonConfigurationKeysPublic {
   /** How often to retry a ZooKeeper operation  in milliseconds. */
   public static final String ZK_RETRY_INTERVAL_MS =
       ZK_PREFIX + "retry-interval-ms";
+
+  /** SSL enablement for all Hadoop-&gt;ZK communication. */
+  //Note: except ZKSignerSecretProvider in hadoop-auth to avoid circular dependency.
+  public static final String ZK_CLIENT_SSL_ENABLED = ZK_PREFIX + "ssl.enabled";
+  /** Keystore location for ZooKeeper client connection over SSL. */
+  public static final String ZK_SSL_KEYSTORE_LOCATION = ZK_PREFIX + "ssl.keystore.location";
+  /** Keystore password for ZooKeeper client connection over SSL. */
+  public static final String ZK_SSL_KEYSTORE_PASSWORD = ZK_PREFIX + "ssl.keystore.password";
+  /** Truststore location for ZooKeeper client connection over SSL. */
+  public static final String ZK_SSL_TRUSTSTORE_LOCATION = ZK_PREFIX + "ssl.truststore.location";
+  /** Truststore password for ZooKeeper client connection over SSL.  */
+  public static final String ZK_SSL_TRUSTSTORE_PASSWORD = ZK_PREFIX + "ssl.truststore.password";
+
   public static final int    ZK_RETRY_INTERVAL_MS_DEFAULT = 1000;
   /** Default domain name resolver for hadoop to use. */
   public static final String HADOOP_DOMAINNAME_RESOLVER_IMPL =
@@ -492,4 +521,10 @@ public class CommonConfigurationKeys extends CommonConfigurationKeysPublic {
   public static final String HADOOP_SECURITY_RESOLVER_IMPL =
       "hadoop.security.resolver.impl";
 
+  /**
+   * Verify checksums on read -default is true.
+   * <p>
+   * {@value}.
+   */
+  public static final String LOCAL_FS_VERIFY_CHECKSUM = "fs.file.checksum.verify";
 }

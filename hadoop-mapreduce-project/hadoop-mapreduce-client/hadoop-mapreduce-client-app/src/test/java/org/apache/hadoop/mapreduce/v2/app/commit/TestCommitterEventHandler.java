@@ -18,7 +18,11 @@
 
 package org.apache.hadoop.mapreduce.v2.app.commit;
 
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -38,9 +42,6 @@ import org.apache.hadoop.mapreduce.v2.app.job.event.JobEventType;
 import org.apache.hadoop.mapreduce.v2.app.rm.RMHeartbeatHandler;
 import org.apache.hadoop.yarn.event.AsyncDispatcher;
 import org.apache.hadoop.yarn.event.EventHandler;
-
-import static org.junit.jupiter.api.Assertions.*;
-import static org.mockito.Mockito.*;
 
 import java.io.File;
 import java.io.IOException;
@@ -160,7 +161,7 @@ public class TestCommitterEventHandler {
       timeToWaitMs -= 10;
     }
     Assertions.assertEquals(1, jeh.numCommitCompletedEvents,
-        "committer did not complete commit after RM hearbeat");
+        "committer did not complete commit after RM heartbeat");
     verify(committer, times(1)).commitJob(any());
 
     //Clean up so we can try to commit again (Don't do this at home)

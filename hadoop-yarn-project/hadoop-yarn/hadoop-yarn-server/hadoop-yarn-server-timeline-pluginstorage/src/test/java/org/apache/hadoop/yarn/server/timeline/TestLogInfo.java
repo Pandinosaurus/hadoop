@@ -40,7 +40,7 @@ import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
@@ -77,6 +77,7 @@ public class TestLogInfo {
 
   @BeforeEach
   public void setup() throws Exception {
+    prepareCleanTestRootDir();
     config.set(MiniDFSCluster.HDFS_MINIDFS_BASEDIR, TEST_ROOT_DIR.toString());
     HdfsConfiguration hdfsConfig = new HdfsConfiguration();
     hdfsCluster = new MiniDFSCluster.Builder(hdfsConfig).numDataNodes(1).build();
@@ -106,7 +107,24 @@ public class TestLogInfo {
     jsonGenerator.close();
     outStream.close();
     outStreamDomain.close();
+
+    FileSystem hdfsFs = hdfsCluster.getFileSystem();
+    if (hdfsFs.exists(TEST_ROOT_DIR)) {
+      hdfsFs.delete(TEST_ROOT_DIR, true);
+    }
     hdfsCluster.shutdown();
+
+    FileSystem localFs = FileSystem.getLocal(config);
+    if (localFs.exists(TEST_ROOT_DIR)) {
+        localFs.delete(TEST_ROOT_DIR, true);
+    }
+  }
+  /**
+   * Creates a fresh test root directory after cleanup.
+   */
+  private void prepareCleanTestRootDir() throws IOException {
+      FileSystem localFs = FileSystem.getLocal(config);
+      localFs.mkdirs(TEST_ROOT_DIR);
   }
 
   @Test
@@ -199,7 +217,7 @@ public class TestLogInfo {
     try {
       String broken = "{ broken { [[]} broken";
       out = PluginStoreTestUtils.createLogFile(logPath, fs);
-      out.write(broken.getBytes(Charset.forName("UTF-8")));
+      out.write(broken.getBytes(StandardCharsets.UTF_8));
       out.close();
       out = null;
     } finally {

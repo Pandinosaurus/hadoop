@@ -18,8 +18,11 @@
 
 package org.apache.hadoop.yarn.server.nodemanager.timelineservice;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -37,6 +40,8 @@ import org.apache.hadoop.yarn.api.records.ApplicationId;
 import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerStatus;
 import org.apache.hadoop.yarn.api.records.NodeId;
+import org.apache.hadoop.yarn.api.records.Priority;
+import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.timelineservice.ContainerEntity;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineEntity;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineEvent;
@@ -51,15 +56,17 @@ import org.apache.hadoop.yarn.server.nodemanager.Context;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.application.ApplicationContainerFinishedEvent;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.Container;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerEvent;
+import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerEventType;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerKillEvent;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerPauseEvent;
 import org.apache.hadoop.yarn.server.nodemanager.containermanager.container.ContainerResumeEvent;
 import org.apache.hadoop.yarn.util.ResourceCalculatorProcessTree;
 import org.apache.hadoop.yarn.util.TimelineServiceHelper;
-import org.junit.Assert;
-import org.junit.Test;
-import org.junit.After;
-import org.junit.Before;
+import org.apache.hadoop.yarn.util.resource.ResourceUtils;
+import org.apache.hadoop.yarn.util.timeline.TimelineEntityV2Converter;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
 
 public class TestNMTimelinePublisher {
   private static final String MEMORY_ID = "MEMORY";
@@ -68,11 +75,15 @@ public class TestNMTimelinePublisher {
   private NMTimelinePublisher publisher;
   private DummyTimelineClient timelineClient;
   private Configuration conf;
+  private Context context;
   private DrainDispatcher dispatcher;
 
 
-  @Before public void setup() throws Exception {
+  @BeforeEach
+  public void setup() throws Exception {
     conf = new Configuration();
+    conf.set(YarnConfiguration.RESOURCE_TYPES, "yarn.io/gpu");
+    ResourceUtils.resetResourceTypes(conf);
     conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
     conf.setFloat(YarnConfiguration.TIMELINE_SERVICE_VERSION, 2.0f);
     conf.setLong(YarnConfiguration.ATS_APP_COLLECTOR_LINGER_PERIOD_IN_MS,
@@ -80,7 +91,7 @@ public class TestNMTimelinePublisher {
     conf.setBoolean(YarnConfiguration.NM_PUBLISH_CONTAINER_EVENTS_ENABLED,
         true);
     timelineClient = new DummyTimelineClient(null);
-    Context context = createMockContext();
+    context = createMockContext();
     dispatcher = new DrainDispatcher();
 
     publisher = new NMTimelinePublisher(context) {
@@ -101,8 +112,8 @@ public class TestNMTimelinePublisher {
   }
 
   private Context createMockContext() {
-    Context context = mock(Context.class);
-    when(context.getNodeId()).thenReturn(NodeId.newInstance("localhost", 0));
+    Context mockContext = mock(Context.class);
+    when(mockContext.getNodeId()).thenReturn(NodeId.newInstance("localhost", 0));
 
     ConcurrentMap<ContainerId, Container> containers =
         new ConcurrentHashMap<>();
@@ -111,21 +122,67 @@ public class TestNMTimelinePublisher {
         ApplicationAttemptId.newInstance(appId, 1);
     ContainerId cId = ContainerId.newContainerId(appAttemptId, 1);
     Container container = mock(Container.class);
+    Resource allocated = Resource.newInstance(1024, 4);
+    allocated.setResourceValue("yarn.io/gpu", 2);
+    when(container.getResource()).thenReturn(allocated);
+    when(container.getPriority()).thenReturn(Priority.newInstance(1));
     when(container.getContainerStartTime())
         .thenReturn(System.currentTimeMillis());
     containers.putIfAbsent(cId, container);
-    when(context.getContainers()).thenReturn(containers);
+    when(mockContext.getContainers()).thenReturn(containers);
 
-    return context;
+    return mockContext;
   }
 
-  @After public void tearDown() throws Exception {
+  @AfterEach
+  public void tearDown() throws Exception {
     if (publisher != null) {
       publisher.stop();
     }
     if (timelineClient != null) {
       timelineClient.stop();
     }
+    ResourceUtils.resetResourceTypes(new YarnConfiguration());
+  }
+
+  @Test
+  public void testPublishContainerCreated() {
+    ApplicationId appId = ApplicationId.newInstance(0, 1);
+    ContainerId containerId = ContainerId.newContainerId(
+        ApplicationAttemptId.newInstance(appId, 1), 1);
+    publisher.createTimelineClient(appId);
+    publisher.publishContainerEvent(
+        new ContainerEvent(containerId, ContainerEventType.INIT_CONTAINER));
+    dispatcher.await();
+    TimelineEntity[] entities = timelineClient.getLastPublishedEntities();
+    assertNotNull(entities);
+    assertEquals(1, entities.length);
+    Map<?, ?> allocations = (Map<?, ?>) entities[0].getInfo().get(
+        ContainerMetricsConstants.ALLOCATED_RESOURCES_INFO);
+    assertEquals(2L, ((Map<?, ?>) allocations.get("yarn.io/gpu")).get("value"));
+    Resource restored = TimelineEntityV2Converter
+        .convertToContainerReport(entities[0], null, null).getAllocatedResource();
+    assertEquals(2, restored.getResourceValue("yarn.io/gpu"));
+    assertEquals(1024, restored.getMemorySize());
+    assertEquals(4, restored.getVirtualCores());
+  }
+
+  @Test
+  public void testPublishContainerCreatedWithoutCustomResources() {
+    ApplicationId appId = ApplicationId.newInstance(0, 1);
+    ContainerId containerId = ContainerId.newContainerId(
+        ApplicationAttemptId.newInstance(appId, 1), 1);
+    Container container = context.getContainers().get(containerId);
+    when(container.getResource()).thenReturn(Resource.newInstance(1024, 4));
+    publisher.createTimelineClient(appId);
+    publisher.publishContainerEvent(
+        new ContainerEvent(containerId, ContainerEventType.INIT_CONTAINER));
+    dispatcher.await();
+    TimelineEntity[] entities = timelineClient.getLastPublishedEntities();
+    assertNotNull(entities);
+    assertEquals(1, entities.length);
+    assertFalse(entities[0].getInfo().containsKey(
+        ContainerMetricsConstants.ALLOCATED_RESOURCES_INFO));
   }
 
   @Test public void testPublishContainerFinish() throws Exception {
@@ -155,15 +212,15 @@ public class TestNMTimelinePublisher {
     TimelineEntity[] lastPublishedEntities =
         timelineClient.getLastPublishedEntities();
 
-    Assert.assertNotNull(lastPublishedEntities);
-    Assert.assertEquals(1, lastPublishedEntities.length);
+    assertNotNull(lastPublishedEntities);
+    assertEquals(1, lastPublishedEntities.length);
     TimelineEntity entity = lastPublishedEntities[0];
-    Assert.assertTrue(cEntity.equals(entity));
-    Assert.assertEquals(diag,
+    assertTrue(cEntity.equals(entity));
+    assertEquals(diag,
         entity.getInfo().get(ContainerMetricsConstants.DIAGNOSTICS_INFO));
-    Assert.assertEquals(exitStatus,
+    assertEquals(exitStatus,
         entity.getInfo().get(ContainerMetricsConstants.EXIT_STATUS_INFO));
-    Assert.assertEquals(TimelineServiceHelper.invertLong(
+    assertEquals(TimelineServiceHelper.invertLong(
         cId.getContainerId()), entity.getIdPrefix());
   }
 
@@ -187,20 +244,20 @@ public class TestNMTimelinePublisher {
     TimelineEntity[] lastPublishedEntities =
         timelineClient.getLastPublishedEntities();
 
-    Assert.assertNotNull(lastPublishedEntities);
-    Assert.assertEquals(1, lastPublishedEntities.length);
+    assertNotNull(lastPublishedEntities);
+    assertEquals(1, lastPublishedEntities.length);
     TimelineEntity entity = lastPublishedEntities[0];
-    Assert.assertEquals(cEntity, entity);
+    assertEquals(cEntity, entity);
 
     NavigableSet<TimelineEvent> events = entity.getEvents();
-    Assert.assertEquals(1, events.size());
-    Assert.assertEquals(ContainerMetricsConstants.PAUSED_EVENT_TYPE,
+    assertEquals(1, events.size());
+    assertEquals(ContainerMetricsConstants.PAUSED_EVENT_TYPE,
         events.iterator().next().getId());
 
     Map<String, Object> info = entity.getInfo();
-    Assert.assertTrue(
+    assertTrue(
         info.containsKey(ContainerMetricsConstants.DIAGNOSTICS_INFO));
-    Assert.assertEquals("test pause",
+    assertEquals("test pause",
         info.get(ContainerMetricsConstants.DIAGNOSTICS_INFO));
   }
 
@@ -224,20 +281,20 @@ public class TestNMTimelinePublisher {
     TimelineEntity[] lastPublishedEntities =
         timelineClient.getLastPublishedEntities();
 
-    Assert.assertNotNull(lastPublishedEntities);
-    Assert.assertEquals(1, lastPublishedEntities.length);
+    assertNotNull(lastPublishedEntities);
+    assertEquals(1, lastPublishedEntities.length);
     TimelineEntity entity = lastPublishedEntities[0];
-    Assert.assertEquals(cEntity, entity);
+    assertEquals(cEntity, entity);
 
     NavigableSet<TimelineEvent> events = entity.getEvents();
-    Assert.assertEquals(1, events.size());
-    Assert.assertEquals(ContainerMetricsConstants.RESUMED_EVENT_TYPE,
+    assertEquals(1, events.size());
+    assertEquals(ContainerMetricsConstants.RESUMED_EVENT_TYPE,
         events.iterator().next().getId());
 
     Map<String, Object> info = entity.getInfo();
-    Assert.assertTrue(
+    assertTrue(
         info.containsKey(ContainerMetricsConstants.DIAGNOSTICS_INFO));
-    Assert.assertEquals("test resume",
+    assertEquals("test resume",
         info.get(ContainerMetricsConstants.DIAGNOSTICS_INFO));
   }
 
@@ -261,24 +318,24 @@ public class TestNMTimelinePublisher {
     TimelineEntity[] lastPublishedEntities =
         timelineClient.getLastPublishedEntities();
 
-    Assert.assertNotNull(lastPublishedEntities);
-    Assert.assertEquals(1, lastPublishedEntities.length);
+    assertNotNull(lastPublishedEntities);
+    assertEquals(1, lastPublishedEntities.length);
     TimelineEntity entity = lastPublishedEntities[0];
-    Assert.assertEquals(cEntity, entity);
+    assertEquals(cEntity, entity);
 
     NavigableSet<TimelineEvent> events = entity.getEvents();
-    Assert.assertEquals(1, events.size());
-    Assert.assertEquals(ContainerMetricsConstants.KILLED_EVENT_TYPE,
+    assertEquals(1, events.size());
+    assertEquals(ContainerMetricsConstants.KILLED_EVENT_TYPE,
         events.iterator().next().getId());
 
     Map<String, Object> info = entity.getInfo();
-    Assert.assertTrue(
+    assertTrue(
         info.containsKey(ContainerMetricsConstants.DIAGNOSTICS_INFO));
-    Assert.assertEquals("test kill",
+    assertEquals("test kill",
         info.get(ContainerMetricsConstants.DIAGNOSTICS_INFO));
-    Assert.assertTrue(
+    assertTrue(
         info.containsKey(ContainerMetricsConstants.EXIT_STATUS_INFO));
-    Assert.assertEquals(1,
+    assertEquals(1,
         info.get(ContainerMetricsConstants.EXIT_STATUS_INFO));
   }
 
@@ -327,9 +384,9 @@ public class TestNMTimelinePublisher {
         (memoryUsage == ResourceCalculatorProcessTree.UNAVAILABLE) ? 0 : 1;
     numberOfResourceMetrics +=
         (cpuUsage == ResourceCalculatorProcessTree.UNAVAILABLE) ? 0 : 1;
-    assertNotNull("entities are expected to be published", entities);
-    assertEquals("Expected number of metrics notpublished",
-        numberOfResourceMetrics, entities[0].getMetrics().size());
+    assertNotNull(entities, "entities are expected to be published");
+    assertEquals(numberOfResourceMetrics, entities[0].getMetrics().size(),
+        "Expected number of metrics notpublished");
     assertEquals(idPrefix, entities[0].getIdPrefix());
     Iterator<TimelineMetric> metrics = entities[0].getMetrics().iterator();
     while (metrics.hasNext()) {
@@ -338,22 +395,22 @@ public class TestNMTimelinePublisher {
       switch (metric.getId()) {
       case CPU_ID:
         if (cpuUsage == ResourceCalculatorProcessTree.UNAVAILABLE) {
-          Assert.fail("Not Expecting CPU Metric to be published");
+          fail("Not Expecting CPU Metric to be published");
         }
         entrySet = metric.getValues().entrySet().iterator();
-        assertEquals("CPU usage metric not matching", cpuUsage,
-            entrySet.next().getValue());
+        assertEquals(cpuUsage, entrySet.next().getValue(),
+            "CPU usage metric not matching");
         break;
       case MEMORY_ID:
         if (memoryUsage == ResourceCalculatorProcessTree.UNAVAILABLE) {
-          Assert.fail("Not Expecting Memory Metric to be published");
+          fail("Not Expecting Memory Metric to be published");
         }
         entrySet = metric.getValues().entrySet().iterator();
-        assertEquals("Memory usage metric not matching", memoryUsage,
-            entrySet.next().getValue());
+        assertEquals(memoryUsage, entrySet.next().getValue(),
+            "Memory usage metric not matching");
         break;
       default:
-        Assert.fail("Invalid Resource Usage metric");
+        fail("Invalid Resource Usage metric");
         break;
       }
     }

@@ -42,8 +42,6 @@ public class DataNodeFaultInjector {
     instance = injector;
   }
 
-  public void getHdfsBlocksMetadata() {}
-
   public void writeBlockAfterFlush() throws IOException {}
 
   public void sendShortCircuitShmResponse() throws IOException {}
@@ -114,6 +112,12 @@ public class DataNodeFaultInjector {
   public void stripedBlockReconstruction() throws IOException {}
 
   /**
+   * Used as a hook to inject failure when initializing a striped block writer.
+   */
+  public void stripedBlockWriterInit(ByteBuffer targetBuffer) throws IOException {
+  }
+
+  /**
    * Used as a hook to inject failure in erasure coding checksum reconstruction
    * process.
    */
@@ -162,4 +166,20 @@ public class DataNodeFaultInjector {
    * Just delay delete replica a while.
    */
   public void delayDeleteReplica() {}
+
+  /**
+   * Just delay run diff record a while.
+   */
+  public void delayDiffRecord() {}
+
+  /**
+   * Just delay getMetaDataInputStream a while.
+   */
+  public void delayGetMetaDataInputStream() {}
+
+  /**
+   * Used in {@link DirectoryScanner#reconcile()} to wait until a storage is removed,
+   * leaving a stale copy of {@link DirectoryScanner#diffs}.
+   */
+  public void waitUntilStorageRemoved() {}
 }

@@ -53,6 +53,7 @@ import org.apache.hadoop.hdfs.server.namenode.FSImage;
 import org.apache.hadoop.hdfs.server.namenode.FSNamesystem;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.security.SecurityUtil;
 
@@ -172,6 +173,12 @@ public class EditLogTailer {
   private final long maxTxnsPerLock;
 
   /**
+   * Directly controls whether {@link #triggerActiveLogRoll} is allowed to run
+   * or not under the current {@link HAState}.
+   */
+  private final boolean triggerRollEnabled;
+
+  /**
    * Timer instance to be set only using constructor.
    * Only tests can reassign this by using setTimerForTests().
    * For source code, this timer instance should be treated as final.
@@ -250,6 +257,11 @@ public class EditLogTailer {
           DFSConfigKeys.DFS_HA_TAILEDITS_ALL_NAMESNODES_RETRY_DEFAULT);
       maxRetries = DFSConfigKeys.DFS_HA_TAILEDITS_ALL_NAMESNODES_RETRY_DEFAULT;
     }
+
+    this.triggerRollEnabled = conf.getBoolean(DFSConfigKeys.DFS_HA_LOG_ROLL_ENABLED_KEY,
+        DFSConfigKeys.DFS_HA_LOG_ROLL_ENABLED_DEFAULT);
+    LOG.info("Rolling is {} on this NN state {}", triggerRollEnabled ? "enabled" : "disabled",
+        namesystem.getState());
 
     inProgressOk = conf.getBoolean(
         DFSConfigKeys.DFS_HA_TAILEDITS_INPROGRESS_KEY,
@@ -355,7 +367,7 @@ public class EditLogTailer {
     // transitionToActive RPC takes the write lock before calling
     // tailer.stop() -- so if we're not interruptible, it will
     // deadlock.
-    namesystem.writeLockInterruptibly();
+    namesystem.writeLockInterruptibly(RwLockMode.GLOBAL);
     try {
       long currentLastTxnId = image.getLastAppliedTxId();
       if (lastTxnId != currentLastTxnId) {
@@ -386,7 +398,7 @@ public class EditLogTailer {
       lastLoadedTxnId = image.getLastAppliedTxId();
       return editsLoaded;
     } finally {
-      namesystem.writeUnlock("doTailEdits");
+      namesystem.writeUnlock(RwLockMode.GLOBAL, "doTailEdits");
     }
   }
 
@@ -506,7 +518,7 @@ public class EditLogTailer {
           // read any more transactions since the last time a roll was
           // triggered.
           boolean triggeredLogRoll = false;
-          if (tooLongSinceLastLoad() &&
+          if (triggerRollEnabled && tooLongSinceLastLoad() &&
               lastRollTriggerTxId < lastLoadedTxnId) {
             triggerActiveLogRoll();
             triggeredLogRoll = true;
@@ -612,8 +624,15 @@ public class EditLogTailer {
     private NamenodeProtocol getActiveNodeProxy() throws IOException {
       if (cachedActiveProxy == null) {
         while (true) {
+          // If the thread is interrupted, quit by returning null.
+          if (Thread.currentThread().isInterrupted()) {
+            LOG.warn("Interrupted while trying to getActiveNodeProxy.");
+            return null;
+          }
+
           // if we have reached the max loop count, quit by returning null
           if ((nnLoopCount / nnCount) >= maxRetries) {
+            LOG.warn("Have reached the max loop count ({}).", nnLoopCount);
             return null;
           }
 
@@ -637,5 +656,25 @@ public class EditLogTailer {
       assert cachedActiveProxy != null;
       return cachedActiveProxy;
     }
+  }
+
+  @VisibleForTesting
+  public NamenodeProtocol getCachedActiveProxy() {
+    return cachedActiveProxy;
+  }
+
+  @VisibleForTesting
+  public long getLastRollTimeMs() {
+    return lastRollTimeMs;
+  }
+
+  @VisibleForTesting
+  public RemoteNameNodeInfo getCurrentNN() {
+    return currentNN;
+  }
+
+  @VisibleForTesting
+  public void setShouldRunForTest(boolean shouldRun) {
+    this.tailerThread.setShouldRun(shouldRun);
   }
 }

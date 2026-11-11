@@ -17,6 +17,10 @@
  */
 package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import java.io.IOException;
 import java.util.List;
 
@@ -26,9 +30,10 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.resourcemanager.RMContext;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestQueueMappings {
 
@@ -42,11 +47,14 @@ public class TestQueueMappings {
       CapacitySchedulerConfiguration.ROOT + "." + Q1;
   private final static String Q2_PATH =
       CapacitySchedulerConfiguration.ROOT + "." + Q2;
+  private static final QueuePath ROOT = new QueuePath(CapacitySchedulerConfiguration.ROOT);
+  private static final QueuePath Q1_QUEUE_PATH = new QueuePath(Q1_PATH);
+  private static final QueuePath Q2_QUEUE_PATH = new QueuePath(Q2_PATH);
 
   private CapacityScheduler cs;
   private YarnConfiguration conf;
 
-  @Before
+  @BeforeEach
   public void setup() {
     CapacitySchedulerConfiguration csConf =
         new CapacitySchedulerConfiguration();
@@ -61,12 +69,19 @@ public class TestQueueMappings {
     cs.start();
   }
 
+  @AfterEach
+  public void tearDown() {
+    if (cs != null) {
+      cs.stop();
+    }
+  }
+
   private void setupQueueConfiguration(CapacitySchedulerConfiguration conf) {
     // Define top-level queues
-    conf.setQueues(CapacitySchedulerConfiguration.ROOT, new String[] { Q1, Q2 });
+    conf.setQueues(ROOT, new String[] {Q1, Q2});
 
-    conf.setCapacity(Q1_PATH, 10);
-    conf.setCapacity(Q2_PATH, 90);
+    conf.setCapacity(Q1_QUEUE_PATH, 10);
+    conf.setCapacity(Q2_QUEUE_PATH, 90);
 
     LOG.info("Setup top-level queues q1 and q2");
   }
@@ -83,7 +98,7 @@ public class TestQueueMappings {
     } catch (IOException ioex) {
       fail = true;
     }
-    Assert.assertTrue("queue initialization failed for non-existent q", fail);
+    assertTrue(fail, "queue initialization failed for non-existent q");
   }
 
   @Test
@@ -101,37 +116,49 @@ public class TestQueueMappings {
   }
 
   @Test
+  public void testQueueMappingsSeparatedByNewlines() throws IOException {
+    conf.set(CapacitySchedulerConfiguration.QUEUE_MAPPING,
+        "u:alice:" + Q1 + "\nu:bob:" + Q2 + ",\ng:devs:" + Q2);
+    cs.reinitialize(conf, null);
+
+    assertEquals(3, cs.getConfiguration().getMappingRules().size());
+  }
+
+  @Test
   public void testQueueMappingPathParsing() {
     QueueMapping leafOnly = QueueMapping.QueueMappingBuilder.create()
         .parsePathString("leaf")
         .build();
 
-    Assert.assertEquals("leaf", leafOnly.getQueue());
-    Assert.assertEquals(null, leafOnly.getParentQueue());
-    Assert.assertEquals("leaf", leafOnly.getFullPath());
+    assertEquals("leaf", leafOnly.getQueue());
+    assertEquals(null, leafOnly.getParentQueue());
+    assertEquals("leaf", leafOnly.getFullPath());
 
     QueueMapping twoLevels = QueueMapping.QueueMappingBuilder.create()
         .parsePathString("root.leaf")
         .build();
 
-    Assert.assertEquals("leaf", twoLevels.getQueue());
-    Assert.assertEquals("root", twoLevels.getParentQueue());
-    Assert.assertEquals("root.leaf", twoLevels.getFullPath());
+    assertEquals("leaf", twoLevels.getQueue());
+    assertEquals("root", twoLevels.getParentQueue());
+    assertEquals("root.leaf", twoLevels.getFullPath());
 
     QueueMapping deep = QueueMapping.QueueMappingBuilder.create()
         .parsePathString("root.a.b.c.d.e.leaf")
         .build();
 
-    Assert.assertEquals("leaf", deep.getQueue());
-    Assert.assertEquals("root.a.b.c.d.e", deep.getParentQueue());
-    Assert.assertEquals("root.a.b.c.d.e.leaf", deep.getFullPath());
+    assertEquals("leaf", deep.getQueue());
+    assertEquals("root.a.b.c.d.e", deep.getParentQueue());
+    assertEquals("root.a.b.c.d.e.leaf", deep.getFullPath());
   }
 
-  @Test (timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testQueueMappingParsingInvalidCases() throws Exception {
     // configuration parsing tests - negative test cases
-    checkInvalidQMapping(conf, cs, "x:a:b", "invalid specifier");
-    checkInvalidQMapping(conf, cs, "u:a", "no queue specified");
+    IOException e = checkInvalidQMapping(conf, cs, "x:a:b", "invalid specifier");
+    assertEquals("Failed to re-init queues : unknown mapping prefix x", e.getMessage());
+    e = checkInvalidQMapping(conf, cs, "u:a", "no queue specified");
+    assertEquals("Failed to re-init queues : Illegal queue mapping u:a", e.getMessage());
     checkInvalidQMapping(conf, cs, "g:a", "no queue specified");
     checkInvalidQMapping(conf, cs, "u:a:b,g:a",
         "multiple mappings with invalid mapping");
@@ -141,18 +168,12 @@ public class TestQueueMappings {
     checkInvalidQMapping(conf, cs, "u:a:", "empty source missing q");
   }
 
-  private void checkInvalidQMapping(YarnConfiguration conf,
+  private IOException checkInvalidQMapping(YarnConfiguration conf,
       CapacityScheduler cs,
       String mapping, String reason)
       throws IOException {
-    boolean fail = false;
-    try {
-      conf.set(CapacitySchedulerConfiguration.QUEUE_MAPPING, mapping);
-      cs.reinitialize(conf, null);
-    } catch (IOException ex) {
-      fail = true;
-    }
-    Assert.assertTrue("invalid mapping did not throw exception for " + reason,
-        fail);
+    conf.set(CapacitySchedulerConfiguration.QUEUE_MAPPING, mapping);
+    return assertThrows(IOException.class, () -> cs.reinitialize(conf, null),
+        "invalid mapping did not throw exception for " + reason);
   }
 }

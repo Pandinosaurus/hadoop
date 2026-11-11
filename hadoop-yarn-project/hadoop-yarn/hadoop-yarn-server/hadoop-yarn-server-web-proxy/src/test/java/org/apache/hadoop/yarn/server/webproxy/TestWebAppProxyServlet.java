@@ -30,6 +30,7 @@ import java.net.HttpURLConnection;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.URL;
+import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.Enumeration;
 import java.util.List;
@@ -37,6 +38,7 @@ import java.util.Map;
 import javax.servlet.ServletConfig;
 import javax.servlet.ServletContext;
 import javax.servlet.ServletException;
+import javax.servlet.ServletOutputStream;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
@@ -50,10 +52,12 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mockito;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.http.HttpServer2;
@@ -67,6 +71,7 @@ import org.apache.hadoop.yarn.api.records.impl.pb.ApplicationReportPBImpl;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException;
 import org.apache.hadoop.yarn.exceptions.YarnException;
+import org.apache.hadoop.yarn.util.StringHelper;
 import org.apache.hadoop.yarn.webapp.MimeType;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 
@@ -110,8 +115,7 @@ public class TestWebAppProxyServlet {
     ((ServerConnector)server.getConnectors()[0]).setHost("localhost");
     server.start();
     originalPort = ((ServerConnector)server.getConnectors()[0]).getLocalPort();
-    LOG.info("Running embedded servlet container at: http://localhost:"
-        + originalPort);
+    LOG.info("Running embedded servlet container at: http://localhost:{}", originalPort);
     // This property needs to be set otherwise CORS Headers will be dropped
     // by HttpUrlConnection
     System.setProperty("sun.net.http.allowRestrictedHeaders", "true");
@@ -332,6 +336,55 @@ public class TestWebAppProxyServlet {
   }
 
   @Test
+  void testRedirectFlagProxyServlet() throws IOException, ServletException {
+    HttpServletRequest request = mock(HttpServletRequest.class);
+    when(request.getMethod()).thenReturn("GET");
+    when(request.getRemoteUser()).thenReturn("dr.who");
+    when(request.getPathInfo()).thenReturn("/application_00_0");
+    when(request.getHeaderNames()).thenReturn(Collections.emptyEnumeration());
+
+    HttpServletResponse response = mock(HttpServletResponse.class);
+    when(response.getOutputStream()).thenReturn(mock(ServletOutputStream.class));
+    when(response.getWriter()).thenReturn(mock(PrintWriter.class));
+    WebAppProxyServlet servlet = new WebAppProxyServlet();
+    ServletConfig config = mock(ServletConfig.class);
+    ServletContext context = mock(ServletContext.class);
+    when(config.getServletContext()).thenReturn(context);
+    AppReportFetcherForTest appReportFetcher =
+        new AppReportFetcherForTest(new YarnConfiguration());
+    servlet.init(config);
+    when(config.getServletContext()
+        .getAttribute(WebAppProxy.FETCHER_ATTRIBUTE))
+        .thenReturn(appReportFetcher);
+
+    appReportFetcher.answer = 8;
+
+    //Check if flag is off
+    YarnConfiguration conf = new YarnConfiguration();
+    conf.set(YarnConfiguration.PROXY_REDIRECT_FLAG, "");
+    servlet.setConf(conf);
+    servlet.doGet(request, response);
+
+    //Check if flag is on
+    conf.set(YarnConfiguration.PROXY_REDIRECT_FLAG, "yarn_knox_proxy");
+    servlet.setConf(conf);
+    servlet.doGet(request, response);
+
+    appReportFetcher.answer = 9;
+    servlet.doGet(request, response);
+
+    appReportFetcher.answer = 10;
+    servlet.doGet(request, response);
+
+    ArgumentCaptor<Integer> statusCaptor = ArgumentCaptor.forClass(Integer.class);
+    Mockito.verify(response, Mockito.times(4)).setStatus(statusCaptor.capture());
+    assertEquals(HttpServletResponse.SC_OK, statusCaptor.getAllValues().get(0));
+    assertEquals(HttpServletResponse.SC_FOUND, statusCaptor.getAllValues().get(1));
+    assertEquals(HttpServletResponse.SC_FOUND, statusCaptor.getAllValues().get(2));
+    assertEquals(HttpServletResponse.SC_NOT_FOUND, statusCaptor.getAllValues().get(3));
+  }
+
+  @Test
   @Timeout(5000)
   void testAppReportForEmptyTrackingUrl() throws Exception {
     configuration.set(YarnConfiguration.PROXY_ADDRESS, "localhost:9090");
@@ -345,7 +398,7 @@ public class TestWebAppProxyServlet {
     AppReportFetcherForTest appReportFetcher = proxy.proxy.appReportFetcher;
 
     try {
-      //set AHS_ENBALED = false to simulate getting the app report from RM
+      //set AHS_ENABLED = false to simulate getting the app report from RM
       configuration.setBoolean(YarnConfiguration.APPLICATION_HISTORY_ENABLED,
           false);
       ApplicationId app = ApplicationId.newInstance(0, 0);
@@ -364,11 +417,13 @@ public class TestWebAppProxyServlet {
       String appAddressInRm =
           WebAppUtils.getResolvedRMWebAppURLWithScheme(configuration) +
               "/cluster" + "/app/" + app.toString();
-      assertEquals(proxyConn.getURL().toString(), appAddressInRm);
+      assertEquals(proxyConn.getURL().toString(), appAddressInRm,
+          "Webapp proxy servlet should have redirected to RM");
 
-      //set AHS_ENBALED = true to simulate getting the app report from AHS
+      //set AHS_ENABLED = true to simulate getting the app report from AHS
       configuration.setBoolean(YarnConfiguration.APPLICATION_HISTORY_ENABLED,
           true);
+      proxy.proxy.appReportFetcher.setAhsAppPageUrlBase(configuration);
       proxyConn = (HttpURLConnection) url.openConnection();
       proxyConn.connect();
       try {
@@ -381,7 +436,8 @@ public class TestWebAppProxyServlet {
       String appAddressInAhs =
           WebAppUtils.getHttpSchemePrefix(configuration) + WebAppUtils.getAHSWebAppURLWithoutScheme(
               configuration) + "/applicationhistory" + "/app/" + app.toString();
-      assertEquals(proxyConn.getURL().toString(), appAddressInAhs);
+      assertEquals(proxyConn.getURL().toString(), appAddressInAhs,
+          "Webapp proxy servlet should have redirected to AHS");
     } finally {
       proxy.close();
     }
@@ -518,7 +574,7 @@ public class TestWebAppProxyServlet {
     while ((read = input.read(buffer)) >= 0) {
       data.write(buffer, 0, read);
     }
-    return new String(data.toByteArray(), "UTF-8");
+    return new String(data.toByteArray(), StandardCharsets.UTF_8);
   }
 
   private boolean isResponseCookiePresent(HttpURLConnection proxyConn,
@@ -607,8 +663,9 @@ public class TestWebAppProxyServlet {
 
   }
 
-  private class AppReportFetcherForTest extends AppReportFetcher {
+  private class AppReportFetcherForTest extends DefaultAppReportFetcher {
     int answer = 0;
+    private String ahsAppPageUrlBase = null;
 
     public AppReportFetcherForTest(Configuration conf) {
       super(conf);
@@ -648,6 +705,21 @@ public class TestWebAppProxyServlet {
         result.getApplicationReport().setOriginalTrackingUrl("localhost:"
             + originalPort + "/foo/timeout?a=b#main");
         return result;
+      } else if (answer == 8) {
+        FetchedAppReport result = getDefaultApplicationReport(appId);
+        result.getApplicationReport().setOriginalTrackingUrl("localhost:"
+            + originalPort + "/foo/bar?yarn_knox_proxy=true");
+        return result;
+      } else if (answer == 9) {
+        FetchedAppReport result = getDefaultApplicationReport(appId);
+        result.getApplicationReport().setOriginalTrackingUrl("localhost:"
+            + originalPort + "/foo/bar?parameter1=true&yarn_knox_proxy=true&doAs=user");
+        return result;
+      } else if (answer == 10) {
+        FetchedAppReport result = getDefaultApplicationReport(appId);
+        result.getApplicationReport().setOriginalTrackingUrl("localhost:"
+            + originalPort);
+        return result;
       }
       return null;
     }
@@ -655,7 +727,7 @@ public class TestWebAppProxyServlet {
     /*
      * If this method is called with isTrackingUrl=false, no tracking url
      * will set in the app report. Hence, there will be a connection exception
-     * when the prxyCon tries to connect.
+     * when the proxyCon tries to connect.
      */
     private FetchedAppReport getDefaultApplicationReport(ApplicationId appId,
         boolean isTrackingUrl) {
@@ -678,6 +750,18 @@ public class TestWebAppProxyServlet {
 
     private FetchedAppReport getDefaultApplicationReport(ApplicationId appId) {
       return getDefaultApplicationReport(appId, true);
+    }
+
+    @VisibleForTesting
+    public String getAhsAppPageUrlBase() {
+      return ahsAppPageUrlBase != null ? ahsAppPageUrlBase : super.getAhsAppPageUrlBase();
+    }
+
+    @VisibleForTesting
+    public void setAhsAppPageUrlBase(Configuration conf) {
+      this.ahsAppPageUrlBase = StringHelper.pjoin(
+          WebAppUtils.getHttpSchemePrefix(conf) + WebAppUtils.getAHSWebAppURLWithoutScheme(conf),
+          "applicationhistory", "app");
     }
   }
 }

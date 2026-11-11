@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.namenode;
 
+import org.apache.commons.lang3.tuple.Pair;
 import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.HadoopIllegalArgumentException;
 import org.apache.hadoop.fs.XAttrSetFlag;
@@ -52,6 +53,7 @@ import org.apache.hadoop.hdfs.server.blockmanagement.DatanodeStorageInfo;
 import org.apache.hadoop.hdfs.server.common.HdfsServerConstants;
 import org.apache.hadoop.hdfs.server.namenode.FSDirectory.DirOp;
 import org.apache.hadoop.hdfs.server.namenode.snapshot.Snapshot;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.io.erasurecode.ErasureCodeConstants;
 import org.apache.hadoop.net.Node;
 import org.apache.hadoop.net.NodeBase;
@@ -104,7 +106,7 @@ class FSDirWriteFileOp {
    */
   static void persistBlocks(
       FSDirectory fsd, String path, INodeFile file, boolean logRetryCache) {
-    assert fsd.getFSNamesystem().hasWriteLock();
+    assert fsd.getFSNamesystem().hasWriteLock(RwLockMode.FS);
     Preconditions.checkArgument(file.isUnderConstruction());
     fsd.getEditLog().logUpdateBlocks(path, file, logRetryCache);
     if(NameNode.stateChangeLog.isDebugEnabled()) {
@@ -220,9 +222,9 @@ class FSDirWriteFileOp {
    * If the conditions still hold, then allocate a new block with
    * the new targets, add it to the INode and to the BlocksMap.
    */
-  static LocatedBlock storeAllocatedBlock(FSNamesystem fsn, String src,
-      long fileId, String clientName, ExtendedBlock previous,
-      DatanodeStorageInfo[] targets) throws IOException {
+  static Pair<LocatedBlock, BlockInfo> storeAllocatedBlock(FSNamesystem fsn, String src,
+      long fileId, String clientName, ExtendedBlock previous, DatanodeStorageInfo[] targets)
+      throws IOException {
     long offset;
     // Run the full analysis again, since things could have changed
     // while chooseTarget() was executing.
@@ -232,37 +234,40 @@ class FSDirWriteFileOp {
                                            previous, onRetryBlock);
     final INodeFile pendingFile = fileState.inode;
     src = fileState.path;
+    LocatedBlock lb;
 
     if (onRetryBlock[0] != null) {
       if (onRetryBlock[0].getLocations().length > 0) {
         // This is a retry. Just return the last block if having locations.
-        return onRetryBlock[0];
+        lb = onRetryBlock[0];
       } else {
         // add new chosen targets to already allocated block and return
         BlockInfo lastBlockInFile = pendingFile.getLastBlock();
         lastBlockInFile.getUnderConstructionFeature().setExpectedLocations(
             lastBlockInFile, targets, pendingFile.getBlockType());
         offset = pendingFile.computeFileSize();
-        return makeLocatedBlock(fsn, lastBlockInFile, targets, offset);
+        lb = makeLocatedBlock(fsn, lastBlockInFile, targets, offset);
       }
+      return Pair.of(lb, null);
     }
 
     // commit the last block and complete it if it has minimum replicas
     fsn.commitOrCompleteLastBlock(pendingFile, fileState.iip,
                                   ExtendedBlock.getLocalBlock(previous));
 
-    // allocate new block, record block locations in INode.
     final BlockType blockType = pendingFile.getBlockType();
     // allocate new block, record block locations in INode.
     Block newBlock = fsn.createNewBlock(blockType);
     INodesInPath inodesInPath = INodesInPath.fromINode(pendingFile);
-    saveAllocatedBlock(fsn, src, inodesInPath, newBlock, targets, blockType);
+    BlockInfo newBlockInfo = saveAllocatedBlock(fsn, src, inodesInPath,
+        newBlock, targets, blockType);
 
     persistNewBlock(fsn, src, pendingFile);
     offset = pendingFile.computeFileSize();
 
     // Return located block
-    return makeLocatedBlock(fsn, fsn.getStoredBlock(newBlock), targets, offset);
+    lb = makeLocatedBlock(fsn, fsn.getStoredBlock(newBlock), targets, offset);
+    return Pair.of(lb, newBlockInfo);
   }
 
   static DatanodeStorageInfo[] chooseTargetForNewBlock(
@@ -364,7 +369,7 @@ class FSDirWriteFileOp {
       boolean shouldReplicate, String ecPolicyName, String storagePolicy,
       boolean logRetryEntry)
       throws IOException {
-    assert fsn.hasWriteLock();
+    assert fsn.hasWriteLock(RwLockMode.FS);
     boolean overwrite = flag.contains(CreateFlag.OVERWRITE);
     boolean isLazyPersist = flag.contains(CreateFlag.LAZY_PERSIST);
 
@@ -372,22 +377,27 @@ class FSDirWriteFileOp {
     FSDirectory fsd = fsn.getFSDirectory();
 
     if (iip.getLastINode() != null) {
-      if (overwrite) {
-        List<INode> toRemoveINodes = new ChunkedArrayList<>();
-        List<Long> toRemoveUCFiles = new ChunkedArrayList<>();
-        long ret = FSDirDeleteOp.delete(fsd, iip, toRemoveBlocks,
-                                        toRemoveINodes, toRemoveUCFiles, now());
-        if (ret >= 0) {
-          iip = INodesInPath.replace(iip, iip.length() - 1, null);
-          FSDirDeleteOp.incrDeletedFileCount(ret);
-          fsn.removeLeasesAndINodes(toRemoveUCFiles, toRemoveINodes, true);
+      fsn.writeLock(RwLockMode.BM);
+      try {
+        if (overwrite) {
+          List<INode> toRemoveINodes = new ChunkedArrayList<>();
+          List<Long> toRemoveUCFiles = new ChunkedArrayList<>();
+          long ret = FSDirDeleteOp.delete(fsd, iip, toRemoveBlocks,
+              toRemoveINodes, toRemoveUCFiles, now());
+          if (ret >= 0) {
+            iip = INodesInPath.replace(iip, iip.length() - 1, null);
+            FSDirDeleteOp.incrDeletedFileCount(ret);
+            fsn.removeLeasesAndINodes(toRemoveUCFiles, toRemoveINodes, true);
+          }
+        } else {
+          // If lease soft limit time is expired, recover the lease
+          fsn.recoverLeaseInternal(FSNamesystem.RecoverLeaseOp.CREATE_FILE, iip,
+              src, holder, clientMachine, false);
+          throw new FileAlreadyExistsException(src + " for client " +
+              clientMachine + " already exists");
         }
-      } else {
-        // If lease soft limit time is expired, recover the lease
-        fsn.recoverLeaseInternal(FSNamesystem.RecoverLeaseOp.CREATE_FILE, iip,
-                                 src, holder, clientMachine, false);
-        throw new FileAlreadyExistsException(src + " for client " +
-            clientMachine + " already exists");
+      } finally {
+        fsn.writeUnlock(RwLockMode.BM, "create");
       }
     }
     fsn.checkFsObjectLimit();
@@ -597,7 +607,7 @@ class FSDirWriteFileOp {
       FSNamesystem fsn, INodesInPath iip, long fileId, String clientName,
       ExtendedBlock previous, LocatedBlock[] onRetryBlock)
       throws IOException {
-    assert fsn.hasReadLock();
+    assert fsn.hasReadLock(RwLockMode.GLOBAL);
     String src = iip.getPath();
     checkBlock(fsn, previous);
     onRetryBlock[0] = null;
@@ -624,7 +634,7 @@ class FSDirWriteFileOp {
       //    timeout, or because of an HA failover. In that case, we know
       //    by the fact that the client is re-issuing the RPC that it
       //    never began to write to the old block. Hence it is safe to
-      //    to return the existing block.
+      //    return the existing block.
       // 3) This is an entirely bogus request/bug -- we should error out
       //    rather than potentially appending a new block with an empty
       //    one in the middle, etc
@@ -695,7 +705,7 @@ class FSDirWriteFileOp {
       FSNamesystem fsn, INodesInPath iip,
       String holder, Block last, long fileId)
       throws IOException {
-    assert fsn.hasWriteLock();
+    assert fsn.hasWriteLock(RwLockMode.GLOBAL);
     final String src = iip.getPath();
     final INodeFile pendingFile;
     INode inode = null;
@@ -776,17 +786,17 @@ class FSDirWriteFileOp {
    * @param targets target datanodes where replicas of the new block is placed
    * @throws QuotaExceededException If addition of block exceeds space quota
    */
-  static void saveAllocatedBlock(FSNamesystem fsn, String src,
+  static BlockInfo saveAllocatedBlock(FSNamesystem fsn, String src,
       INodesInPath inodesInPath, Block newBlock, DatanodeStorageInfo[] targets,
       BlockType blockType) throws IOException {
-    assert fsn.hasWriteLock();
+    assert fsn.hasWriteLock(RwLockMode.GLOBAL);
     BlockInfo b = addBlock(fsn.dir, src, inodesInPath, newBlock, targets,
         blockType);
-    logAllocatedBlock(src, b);
     DatanodeStorageInfo.incrementBlocksScheduled(targets);
+    return b;
   }
 
-  private static void logAllocatedBlock(String src, BlockInfo b) {
+  static void logAllocatedBlock(String src, BlockInfo b) {
     if (!NameNode.stateChangeLog.isInfoEnabled()) {
       return;
     }
@@ -798,7 +808,7 @@ class FSDirWriteFileOp {
     if (uc != null) {
       uc.appendUCPartsConcise(sb);
     }
-    sb.append(" for " + src);
+    sb.append(" for ").append(src);
     NameNode.stateChangeLog.info(sb.toString());
   }
 

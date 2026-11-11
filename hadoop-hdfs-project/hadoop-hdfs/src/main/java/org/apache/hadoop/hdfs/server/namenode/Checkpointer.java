@@ -37,6 +37,7 @@ import org.apache.hadoop.hdfs.server.protocol.NamenodeCommand;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocol;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLog;
 import org.apache.hadoop.hdfs.server.protocol.RemoteEditLogManifest;
+import org.apache.hadoop.hdfs.util.RwLockMode;
 import org.apache.hadoop.io.MD5Hash;
 import org.apache.hadoop.util.Daemon;
 import org.apache.hadoop.util.Lists;
@@ -142,7 +143,8 @@ class Checkpointer extends Daemon {
       try {
         long now = monotonicNow();
         boolean shouldCheckpoint = false;
-        if(now >= lastCheckpointTime + checkpointPeriodMSec) {
+        if(lastCheckpointTime == 0
+            || now >= lastCheckpointTime + checkpointPeriodMSec) {
           shouldCheckpoint = true;
         } else if(now >= lastEditLogCheckTime + periodMSec) {
           long txns = countUncheckpointedTxns();
@@ -244,13 +246,14 @@ class Checkpointer extends Daemon {
 
       if(needReloadImage) {
         LOG.info("Loading image with txid " + sig.mostRecentCheckpointTxId);
-        backupNode.namesystem.writeLock();
+        backupNode.namesystem.writeLock(RwLockMode.GLOBAL);
         try {
           File file = bnStorage.findImageFile(NameNodeFile.IMAGE,
               sig.mostRecentCheckpointTxId);
           bnImage.reloadFromImageFile(file, backupNode.getNamesystem());
         } finally {
-          backupNode.namesystem.writeUnlock("doCheckpointByBackupNode");
+          backupNode.namesystem.writeUnlock(
+              RwLockMode.GLOBAL, "doCheckpointByBackupNode");
         }
       }
       rollForwardByApplyingLogs(manifest, bnImage, backupNode.getNamesystem());
@@ -258,7 +261,7 @@ class Checkpointer extends Daemon {
     
     long txid = bnImage.getLastAppliedTxId();
     
-    backupNode.namesystem.writeLock();
+    backupNode.namesystem.writeLock(RwLockMode.GLOBAL);
     try {
       backupNode.namesystem.setImageLoaded();
       if(backupNode.namesystem.getBlocksTotal() > 0) {
@@ -272,7 +275,7 @@ class Checkpointer extends Daemon {
         bnImage.updateStorageVersion();
       }
     } finally {
-      backupNode.namesystem.writeUnlock("doCheckpoint");
+      backupNode.namesystem.writeUnlock(RwLockMode.GLOBAL, "doCheckpoint");
     }
 
     if(cpCmd.needToReturnImage()) {

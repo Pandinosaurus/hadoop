@@ -17,7 +17,13 @@
  */
 package org.apache.hadoop.mapreduce.v2.app.webapp;
 
-import static org.mockito.Mockito.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.any;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.util.Iterator;
@@ -39,7 +45,6 @@ import org.apache.hadoop.yarn.webapp.MimeType;
 import org.apache.hadoop.yarn.webapp.ResponseInfo;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import static org.junit.Assert.*;
 
 public class TestAppController {
 
@@ -275,8 +280,7 @@ public class TestAppController {
   public void testDownloadConfiguration() {
     appController.downloadConf();
     String jobConfXml = appController.getData();
-    assertTrue("Error downloading the job configuration file.",
-        !jobConfXml.contains("Error"));
+    assertTrue(!jobConfXml.contains("Error"), "Error downloading the job configuration file.");
   }
 
   /**
@@ -319,6 +323,8 @@ public class TestAppController {
     appController.attempts();
 
     assertEquals(AttemptsPage.class, appController.getClazz());
+
+    appController.getProperty().remove(AMParams.ATTEMPT_STATE);
   }
 
 }

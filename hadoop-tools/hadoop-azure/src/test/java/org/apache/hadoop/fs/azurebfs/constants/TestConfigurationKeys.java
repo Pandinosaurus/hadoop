@@ -32,6 +32,9 @@ public final class TestConfigurationKeys {
   public static final String FS_AZURE_TEST_NAMESPACE_ENABLED_ACCOUNT = "fs.azure.test.namespace.enabled";
   public static final String FS_AZURE_TEST_APPENDBLOB_ENABLED = "fs.azure.test.appendblob.enabled";
   public static final String FS_AZURE_TEST_CPK_ENABLED = "fs.azure.test.cpk.enabled";
+  public static final String FS_AZURE_SCALE_TEST_HUGE_UPLOAD = "fs.azure.scale.test.huge.upload";
+  public static final String FS_AZURE_SCALE_TEST_ENABLED = "fs.azure.scale.test.enabled";
+  public static final String SCALE_TEST_OPERATION_COUNT = "scale.test.operation.count";
 
   public static final String FS_AZURE_BLOB_DATA_CONTRIBUTOR_CLIENT_ID = "fs.azure.account.oauth2.contributor.client.id";
   public static final String FS_AZURE_BLOB_DATA_CONTRIBUTOR_CLIENT_SECRET = "fs.azure.account.oauth2.contributor.client.secret";
@@ -41,6 +44,7 @@ public final class TestConfigurationKeys {
 
   public static final String FS_AZURE_BLOB_FS_CLIENT_ID = "fs.azure.account.oauth2.client.id";
   public static final String FS_AZURE_BLOB_FS_CLIENT_SECRET = "fs.azure.account.oauth2.client.secret";
+  public static final String FS_AZURE_BLOB_FS_CLIENT_SERVICE_PRINCIPAL_OBJECT_ID = "fs.azure.account.oauth2.client.service.principal.object.id";
 
   public static final String FS_AZURE_BLOB_FS_CHECKACCESS_TEST_CLIENT_ID = "fs.azure.account.test.oauth2.client.id";
   public static final String FS_AZURE_BLOB_FS_CHECKACCESS_TEST_CLIENT_SECRET = "fs.azure.account.test.oauth2.client.secret";
@@ -54,16 +58,21 @@ public final class TestConfigurationKeys {
 
   public static final String FS_AZURE_TEST_APP_SERVICE_PRINCIPAL_OBJECT_ID = "fs.azure.test.app.service.principal.object.id";
 
+  public static final String FS_AZURE_TEST_END_USER_TENANT_ID = "fs.azure.test.end.user.tenant.id";
+  public static final String FS_AZURE_TEST_END_USER_OBJECT_ID = "fs.azure.test.end.user.object.id";
+
   public static final String FS_AZURE_TEST_APP_ID = "fs.azure.test.app.id";
 
   public static final String FS_AZURE_TEST_APP_SECRET = "fs.azure.test.app.secret";
 
   public static final String FS_AZURE_TEST_CPK_ENABLED_SECONDARY_ACCOUNT = "fs.azure.test.cpk-enabled-secondary-account";
   public static final String FS_AZURE_TEST_CPK_ENABLED_SECONDARY_ACCOUNT_KEY = "fs.azure.test.cpk-enabled-secondary-account.key";
+  public static final String FS_AZURE_TEST_FIXED_SAS_TOKEN = "fs.azure.test.fixed.sas.token";
 
   public static final String TEST_CONFIGURATION_FILE_NAME = "azure-test.xml";
   public static final String TEST_CONTAINER_PREFIX = "abfs-testcontainer-";
   public static final int TEST_TIMEOUT = 15 * 60 * 1000;
+  public static final int ENCRYPTION_KEY_LEN = 32;
 
   private TestConfigurationKeys() {}
 }

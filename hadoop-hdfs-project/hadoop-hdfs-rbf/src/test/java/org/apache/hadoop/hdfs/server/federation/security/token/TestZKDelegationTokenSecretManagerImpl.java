@@ -22,20 +22,26 @@ import static org.apache.hadoop.hdfs.server.federation.router.security.token.ZKD
 import static org.apache.hadoop.security.token.delegation.ZKDelegationTokenSecretManager.ZK_DTSM_TOKEN_WATCHER_ENABLED;
 import static org.apache.hadoop.security.token.delegation.web.DelegationTokenManager.REMOVAL_SCAN_INTERVAL;
 import static org.apache.hadoop.security.token.delegation.web.DelegationTokenManager.RENEW_INTERVAL;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.fail;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.server.federation.router.security.token.ZKDelegationTokenSecretManagerImpl;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.SecretManager;
+import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenIdentifier;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.TestZKDelegationTokenSecretManager;
+import org.apache.hadoop.security.token.delegation.ZKDelegationTokenSecretManager;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenIdentifier;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenManager;
 import org.apache.hadoop.util.Time;
-import org.junit.Assert;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -43,6 +49,55 @@ public class TestZKDelegationTokenSecretManagerImpl
     extends TestZKDelegationTokenSecretManager {
   private static final Logger LOG =
       LoggerFactory.getLogger(TestZKDelegationTokenSecretManagerImpl.class);
+
+  @Override
+  @AfterEach
+  public void tearDown() throws Exception {
+    super.tearDown();
+    // Prevent a STOPPED Curator from leaking into the next test.
+    ZKDelegationTokenSecretManager.setCurator(null);
+  }
+
+  private static class CreationManager extends ZKDelegationTokenSecretManagerImpl {
+    CreationManager(Configuration conf) {
+      super(conf);
+    }
+
+    boolean cached(AbstractDelegationTokenIdentifier id) {
+      return currentTokens.containsKey(id);
+    }
+
+    void persist(AbstractDelegationTokenIdentifier id) throws Exception {
+      addOrUpdateToken(id, new DelegationTokenInformation(
+          Time.now() + 60_000, new byte[]{1}), false);
+    }
+  }
+
+  @Test
+  public void testCreationWithoutSpeculativeCachePublication() throws Exception {
+    Configuration conf = getSecretConf(zkServer.getConnectString());
+    conf.setBoolean(ZK_DTSM_TOKEN_WATCHER_ENABLED, false);
+    conf.setInt(ZK_DTSM_ROUTER_TOKEN_SYNC_INTERVAL, 3600);
+    CreationManager manager = new CreationManager(conf);
+    try {
+      AbstractDelegationTokenIdentifier id = manager.createIdentifier();
+      id.setSequenceNumber(123456);
+      manager.persist(id);
+      assertFalse(manager.cached(id));
+      assertThrows(org.apache.zookeeper.KeeperException.NodeExistsException.class,
+          () -> manager.persist(id));
+      assertFalse(manager.cached(id), "Failed creation must not publish a token");
+
+      AbstractDelegationTokenIdentifier issued = manager.createIdentifier();
+      issued.setOwner(new Text("owner"));
+      issued.setRenewer(new Text("renewer"));
+      Token<AbstractDelegationTokenIdentifier> token = new Token<>(issued, manager);
+      assertFalse(manager.cached(issued));
+      assertArrayEquals(token.getPassword(), manager.retrievePassword(issued));
+    } finally {
+      manager.stopThreads();
+    }
+  }
 
   @SuppressWarnings("unchecked")
   @Test
@@ -68,7 +123,7 @@ public class TestZKDelegationTokenSecretManagerImpl
       Token<DelegationTokenIdentifier> token =
           (Token<DelegationTokenIdentifier>) tm1.createToken(
               UserGroupInformation.getCurrentUser(), "foo");
-      Assert.assertNotNull(token);
+      assertNotNull(token);
       tm2.verifyToken(token);
       tm2.renewToken(token, "foo");
       tm1.verifyToken(token);
@@ -82,7 +137,7 @@ public class TestZKDelegationTokenSecretManagerImpl
 
       token = (Token<DelegationTokenIdentifier>) tm2.createToken(
           UserGroupInformation.getCurrentUser(), "bar");
-      Assert.assertNotNull(token);
+      assertNotNull(token);
       tm1.verifyToken(token);
       tm1.renewToken(token, "bar");
       tm2.verifyToken(token);
@@ -133,7 +188,7 @@ public class TestZKDelegationTokenSecretManagerImpl
       Token<DelegationTokenIdentifier> token =
           (Token<DelegationTokenIdentifier>) tm1.createToken(
               UserGroupInformation.getCurrentUser(), "foo");
-      Assert.assertNotNull(token);
+      assertNotNull(token);
       tm2.verifyToken(token);
 
       // time: X + 9
@@ -198,7 +253,7 @@ public class TestZKDelegationTokenSecretManagerImpl
       Token<DelegationTokenIdentifier> token =
           (Token<DelegationTokenIdentifier>) tm1.createToken(
               UserGroupInformation.getCurrentUser(), "foo");
-      Assert.assertNotNull(token);
+      assertNotNull(token);
       tm2.verifyToken(token);
 
       // time: X + 9

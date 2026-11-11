@@ -20,19 +20,26 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.util.Sets;
 import org.apache.hadoop.yarn.api.records.QueueACL;
-import org.junit.Test;
+import org.apache.hadoop.yarn.exceptions.YarnRuntimeException;
+import org.apache.hadoop.yarn.server.resourcemanager.nodelabels.RMNodeLabelsManager;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.Set;
 
-import static org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration.ROOT;
-import static org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerConfiguration.getQueuePrefix;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 public class TestCapacitySchedulerConfiguration {
 
-  private static final String ROOT_TEST = ROOT + ".test";
+  private static final String ROOT_TEST_PATH = CapacitySchedulerConfiguration.ROOT + ".test";
+  private static final QueuePath ROOT_TEST = new QueuePath(ROOT_TEST_PATH);
+  private static final QueuePath ROOT = new QueuePath(CapacitySchedulerConfiguration.ROOT);
   private static final String EMPTY_ACL = "";
   private static final String SPACE_ACL = " ";
   private static final String USER1 = "user1";
@@ -47,29 +54,29 @@ public class TestCapacitySchedulerConfiguration {
     return new CapacitySchedulerConfiguration(new Configuration(false), false);
   }
 
-  private AccessControlList getSubmitAcl(CapacitySchedulerConfiguration csConf, String queue) {
+  private AccessControlList getSubmitAcl(CapacitySchedulerConfiguration csConf, QueuePath queue) {
     return csConf.getAcl(queue, QueueACL.SUBMIT_APPLICATIONS);
   }
 
-  private void setSubmitAppsConfig(CapacitySchedulerConfiguration csConf, String queue,
+  private void setSubmitAppsConfig(CapacitySchedulerConfiguration csConf, QueuePath queue,
       String value) {
     csConf.set(getSubmitAppsConfigKey(queue), value);
   }
 
-  private String getSubmitAppsConfigKey(String queue) {
-    return getQueuePrefix(queue) + "acl_submit_applications";
+  private String getSubmitAppsConfigKey(QueuePath queue) {
+    return QueuePrefixes.getQueuePrefix(queue) + "acl_submit_applications";
   }
 
-  private void testWithGivenAclNoOneHasAccess(String queue, String aclValue) {
+  private void testWithGivenAclNoOneHasAccess(QueuePath queue, String aclValue) {
     testWithGivenAclNoOneHasAccessInternal(queue, queue, aclValue);
   }
 
-  private void testWithGivenAclNoOneHasAccess(String queueToSet, String queueToVerify,
+  private void testWithGivenAclNoOneHasAccess(QueuePath queueToSet, QueuePath queueToVerify,
       String aclValue) {
     testWithGivenAclNoOneHasAccessInternal(queueToSet, queueToVerify, aclValue);
   }
 
-  private void testWithGivenAclNoOneHasAccessInternal(String queueToSet, String queueToVerify,
+  private void testWithGivenAclNoOneHasAccessInternal(QueuePath queueToSet, QueuePath queueToVerify,
       String aclValue) {
     CapacitySchedulerConfiguration csConf = createDefaultCsConf();
     setSubmitAppsConfig(csConf, queueToSet, aclValue);
@@ -79,14 +86,14 @@ public class TestCapacitySchedulerConfiguration {
     assertFalse(acl.isAllAllowed());
   }
 
-  private void testWithGivenAclCorrectUserAndGroupHasAccess(String queue, String aclValue,
+  private void testWithGivenAclCorrectUserAndGroupHasAccess(QueuePath queue, String aclValue,
       Set<String> expectedUsers, Set<String> expectedGroups) {
     testWithGivenAclCorrectUserAndGroupHasAccessInternal(queue, queue, aclValue, expectedUsers,
         expectedGroups);
   }
 
-  private void testWithGivenAclCorrectUserAndGroupHasAccessInternal(String queueToSet,
-      String queueToVerify, String aclValue, Set<String> expectedUsers,
+  private void testWithGivenAclCorrectUserAndGroupHasAccessInternal(QueuePath queueToSet,
+      QueuePath queueToVerify, String aclValue, Set<String> expectedUsers,
       Set<String> expectedGroups) {
     CapacitySchedulerConfiguration csConf = createDefaultCsConf();
     setSubmitAppsConfig(csConf, queueToSet, aclValue);
@@ -157,4 +164,130 @@ public class TestCapacitySchedulerConfiguration {
         expectedGroups);
   }
 
+  @Test
+  public void testNonLabeledQueueCapacity() {
+    CapacitySchedulerConfiguration csConf = createDefaultCsConf();
+    csConf.set(queueKey(ROOT, CapacitySchedulerConfiguration.CAPACITY), "42");
+    assertEquals(100f, csConf.getNonLabeledQueueCapacity(ROOT), 0f);
+
+    csConf.set("test.capacity", "30");
+    csConf.set(queueKey(ROOT_TEST, CapacitySchedulerConfiguration.CAPACITY),
+        "${test.capacity}");
+    assertEquals(30f, csConf.getLabeledQueueCapacity(ROOT_TEST, ""), 0f);
+    csConf.setCapacityByLabel(ROOT_TEST, "", 35f);
+    assertEquals(35f, csConf.getNonLabeledQueueCapacity(ROOT_TEST), 0f);
+  }
+
+  @Test
+  public void testAccessibleNodeLabels() {
+    CapacitySchedulerConfiguration csConf = createDefaultCsConf();
+    assertNull(csConf.getAccessibleNodeLabels(ROOT_TEST));
+
+    csConf.setAccessibleNodeLabels(ROOT, Set.of("red"));
+    assertEquals(Set.of(RMNodeLabelsManager.ANY), csConf.getAccessibleNodeLabels(ROOT));
+
+    csConf.set(queueKey(ROOT_TEST, CapacitySchedulerConfiguration.ACCESSIBLE_NODE_LABELS),
+        "red,*");
+    assertEquals(Set.of(RMNodeLabelsManager.ANY), csConf.getAccessibleNodeLabels(ROOT_TEST));
+  }
+
+  @Test
+  public void testLegacyQueueModeDefaultsToTrue() {
+    CapacitySchedulerConfiguration csConf = createDefaultCsConf();
+    assertTrue(csConf.isLegacyQueueMode());
+    for (String invalid : new String[] {"junk", ""}) {
+      csConf.set(CapacitySchedulerConfiguration.PREFIX + "legacy-queue-mode.enabled", invalid);
+      assertTrue(csConf.isLegacyQueueMode());
+    }
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"6w", "[memory=1024,vcores=1]", "[memory=50%,vcores=2w]"})
+  public void testPercentageGettersOfNonPercentageCapacity(String capacity) {
+    CapacitySchedulerConfiguration csConf = createDefaultCsConf();
+    csConf.set(queueKey(ROOT_TEST, CapacitySchedulerConfiguration.CAPACITY), capacity);
+    assertEquals(0f, csConf.getNonLabeledQueueCapacity(ROOT_TEST), 0f);
+    assertEquals(100f, csConf.getNonLabeledQueueMaximumCapacity(ROOT_TEST), 0f);
+  }
+
+  @ParameterizedTest
+  @CsvSource({
+      "'[memory=2048,vcores=2]', true",
+      "'[memory=2048,vcores=2w]', true",
+      "'[foo]', true",
+      "'[memory=2048,vcores=50%]', false",
+      "'memory=2048', false",
+      "'[memory=2048,vcores=2w', false"
+  })
+  public void testAbsoluteResourceConfigTypeCheck(String capacity, boolean expected) {
+    CapacitySchedulerConfiguration csConf = createDefaultCsConf();
+    csConf.set(queueKey(ROOT_TEST, CapacitySchedulerConfiguration.CAPACITY), capacity);
+    csConf.setCapacityByLabel(ROOT_TEST, "gpu", capacity);
+    assertEquals(expected, csConf.checkConfigTypeIsAbsoluteResource("", ROOT_TEST, Set.of()));
+    assertEquals(expected,
+        csConf.checkConfigTypeIsAbsoluteResource("gpu", ROOT_TEST, Set.of()));
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"3", " 3 ", "0x3", "${test.value}"})
+  public void testQueueIntegerSettingsAreReadLikeGetInt(String value) {
+    CapacitySchedulerConfiguration csConf = createDefaultCsConf();
+    csConf.set("test.value", "3");
+    csConf.set(queueKey(ROOT_TEST, CapacitySchedulerConfiguration.MAXIMUM_QUEUE_DEPTH), value);
+    csConf.set(queueKey(ROOT_TEST, CapacitySchedulerConfiguration.MAXIMUM_APPLICATIONS_SUFFIX),
+        value);
+    assertEquals(3, csConf.getMaximumAutoCreatedQueueDepth(ROOT_TEST));
+    assertEquals(3, csConf.getMaximumApplicationsPerQueue(ROOT_TEST));
+  }
+
+  @Test
+  public void testUnknownAppOrderingPolicyClass() {
+    CapacitySchedulerConfiguration csConf = createDefaultCsConf();
+    csConf.set(queueKey(ROOT_TEST, CapacitySchedulerConfiguration.ORDERING_POLICY),
+        "com.example.Missing");
+    RuntimeException e = assertThrows(RuntimeException.class,
+        () -> csConf.getAppOrderingPolicy(ROOT_TEST));
+    assertEquals("Unable to construct ordering policy for: com.example.Missing,"
+        + " com.example.Missing", e.getMessage());
+  }
+
+  @Test
+  public void testAppOrderingPolicyNameAsQueueOrderingPolicy() {
+    CapacitySchedulerConfiguration csConf = createDefaultCsConf();
+    // "fair" is only an application ordering policy name, a parent queue reads it as a class.
+    csConf.set(queueKey(ROOT, CapacitySchedulerConfiguration.ORDERING_POLICY), "fair");
+    YarnRuntimeException e = assertThrows(YarnRuntimeException.class,
+        () -> csConf.getQueueOrderingPolicy(ROOT, null));
+    assertEquals("Unable to construct queue ordering policy=fair queue=root", e.getMessage());
+  }
+
+  @Test
+  public void testOffSwitchPerHeartbeatLimitIsAtLeastOne() {
+    CapacitySchedulerConfiguration csConf = createDefaultCsConf();
+    csConf.setOffSwitchPerHeartbeatLimit(0);
+    assertEquals(1, csConf.getOffSwitchPerHeartbeatLimit());
+  }
+
+  @Test
+  public void testInvalidAutoCreatedQueueManagementPolicyClass() {
+    CapacitySchedulerConfiguration csConf = createDefaultCsConf();
+    String policyKey = queueKey(ROOT_TEST,
+        CapacitySchedulerConfiguration.AUTO_CREATED_QUEUE_MANAGEMENT_POLICY);
+
+    csConf.set(policyKey, "java.lang.String");
+    YarnRuntimeException e = assertThrows(YarnRuntimeException.class,
+        () -> csConf.getAutoCreatedQueueManagementPolicyClass(ROOT_TEST));
+    assertEquals("Class: java.lang.String not instance of org.apache.hadoop.yarn.server."
+        + "resourcemanager.scheduler.capacity.AutoCreatedQueueManagementPolicy", e.getMessage());
+
+    csConf.set(policyKey, "com.example.Missing");
+    e = assertThrows(YarnRuntimeException.class,
+        () -> csConf.getAutoCreatedQueueManagementPolicyClass(ROOT_TEST));
+    assertEquals("Could not instantiate AutoCreatedQueueManagementPolicy: com.example.Missing"
+        + " for queue: root.test", e.getMessage());
+  }
+
+  private static String queueKey(QueuePath queue, String suffix) {
+    return QueuePrefixes.getQueuePrefix(queue) + suffix;
+  }
 }

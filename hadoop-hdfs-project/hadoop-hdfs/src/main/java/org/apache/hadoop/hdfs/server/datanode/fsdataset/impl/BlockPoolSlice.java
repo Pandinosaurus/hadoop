@@ -28,6 +28,7 @@ import java.io.InputStream;
 import java.io.OutputStreamWriter;
 import java.io.RandomAccessFile;
 import java.io.Writer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -399,7 +400,7 @@ public class BlockPoolSlice {
     try {
       long used = getDfsUsed();
       try (Writer out = new OutputStreamWriter(
-          Files.newOutputStream(outFile.toPath()), "UTF-8")) {
+          Files.newOutputStream(outFile.toPath()), StandardCharsets.UTF_8)) {
         // mtime is written last, so that truncated writes won't be valid.
         out.write(Long.toString(used) + " " + Long.toString(timer.now()));
         // This is only called as part of the volume shutdown.
@@ -1125,11 +1126,15 @@ public class BlockPoolSlice {
   }
 
   /**
-   * Return the size of fork pool used for adding replica in map.
+   * Return the configured parallelism of the fork pool used for adding
+   * replica in map.  Deliberately not {@link ForkJoinPool#getPoolSize()}:
+   * that reports the worker threads currently started, which the pool
+   * grows lazily and shrinks again when idle, so asserting on it races
+   * against the pool's own thread management.
    */
   @VisibleForTesting
   public static int getAddReplicaForkPoolSize() {
-    return addReplicaThreadPool.getPoolSize();
+    return addReplicaThreadPool.getParallelism();
   }
 
   @VisibleForTesting

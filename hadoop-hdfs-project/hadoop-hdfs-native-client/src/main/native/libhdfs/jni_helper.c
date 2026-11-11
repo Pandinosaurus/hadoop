@@ -651,9 +651,14 @@ static char* getClassPath()
  * every thread.  You must be holding the jvmMutex when you call this
  * function.
  *
+ * @param[out] attachedByLibhdfs  Set to true if this call attached the current
+ *                                thread to the JVM, false if the thread was
+ *                                already attached by someone else. Only the
+ *                                former may be detached at thread exit.
+ *
  * @return          The JNIEnv on success; error code otherwise
  */
-static JNIEnv* getGlobalJNIEnv(void)
+static JNIEnv* getGlobalJNIEnv(bool *attachedByLibhdfs)
 {
     JavaVM* vmBuf[VM_BUF_LENGTH]; 
     JNIEnv *env;
@@ -672,6 +677,7 @@ static JNIEnv* getGlobalJNIEnv(void)
     JavaVM *vm;
     JavaVMOption *options;
 
+    *attachedByLibhdfs = false;
     rv = JNI_GetCreatedJavaVMs(&(vmBuf[0]), VM_BUF_LENGTH, &noVMs);
     if (rv != 0) {
         fprintf(stderr, "JNI_GetCreatedJavaVMs failed with error: %d\n", rv);
@@ -755,15 +761,30 @@ static JNIEnv* getGlobalJNIEnv(void)
                     "FileSystem: loadFileSystems failed");
             return NULL;
         }
+        *attachedByLibhdfs = true;
     } else {
-        //Attach this thread to the VM
         vm = vmBuf[0];
+        // Reuse an existing attachment rather than creating one. On a thread
+        // the JVM or the embedding application already attached,
+        // AttachCurrentThread succeeds and hands back the same JNIEnv, which
+        // would leave libhdfs believing it owns an attachment it did not make
+        // and detaching it at thread exit.
+        rv = (*vm)->GetEnv(vm, (void**)&env, JNI_VERSION_1_2);
+        if (rv == JNI_OK) {
+            return env;
+        }
+        if (rv != JNI_EDETACHED) {
+            fprintf(stderr, "Call to GetEnv failed with error: %d\n", rv);
+            return NULL;
+        }
+        //Attach this thread to the VM
         rv = (*vm)->AttachCurrentThread(vm, (void*)&env, 0);
         if (rv != 0) {
             fprintf(stderr, "Call to AttachCurrentThread "
                     "failed with error: %d\n", rv);
             return NULL;
         }
+        *attachedByLibhdfs = true;
     }
 
     return env;
@@ -818,26 +839,31 @@ JNIEnv* getJNIEnv(void)
       fprintf(stderr, "getJNIEnv: Unable to create ThreadLocalState\n");
       return NULL;
     }
-    if (threadLocalStorageSet(state)) {
-      mutexUnlock(&jvmMutex);
-      goto fail;
-    }
-    THREAD_LOCAL_STORAGE_SET_QUICK(state);
 
-    state->env = getGlobalJNIEnv();
-    mutexUnlock(&jvmMutex);
-
+    state->env = getGlobalJNIEnv(&state->attachedByLibhdfs);
     if (!state->env) {
+        mutexUnlock(&jvmMutex);
         goto fail;
     }
 
     jthrowable jthr = NULL;
     jthr = initCachedClasses(state->env);
     if (jthr) {
+      mutexUnlock(&jvmMutex);
       printExceptionAndFree(state->env, jthr, PRINT_EXC_ALL,
                             "initCachedClasses failed");
       goto fail;
     }
+
+    if (threadLocalStorageSet(state)) {
+      mutexUnlock(&jvmMutex);
+      goto fail;
+    }
+
+    // set the TLS var only when the state passes all the checks
+    THREAD_LOCAL_STORAGE_SET_QUICK(state);
+    mutexUnlock(&jvmMutex);
+
     return state->env;
 
 fail:

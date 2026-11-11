@@ -27,7 +27,7 @@ import java.util.List;
  */
 public class JavaProcess {
 
-  private Process process = null;
+  private Process process;
 
   public JavaProcess(Class<?> clazz, File output)
       throws IOException, InterruptedException {
@@ -35,12 +35,12 @@ public class JavaProcess {
   }
 
   public JavaProcess(Class<?> clazz, List<String> addClassPaths, File output)
-      throws IOException, InterruptedException {
+      throws IOException {
     String javaHome = System.getProperty("java.home");
     String javaBin =
         javaHome + File.separator + "bin" + File.separator + "java";
     String classpath = System.getProperty("java.class.path");
-    classpath = classpath.concat("./src/test/resources");
+    classpath = classpath + File.pathSeparator + "./src/test/resources";
     if (addClassPaths != null) {
       for (String addClasspath : addClassPaths) {
         classpath = classpath.concat(File.pathSeparatorChar + addClasspath);
@@ -53,6 +53,36 @@ public class JavaProcess {
     builder.redirectOutput(output);
     builder.redirectError(output);
     process = builder.start();
+  }
+
+  public JavaProcess(Class<?> clazz, List<String> addClassPaths, File output, String param)
+      throws IOException {
+    String javaHome = System.getProperty("java.home");
+    String javaBin = javaHome + File.separator + "bin" + File.separator + "java";
+    String classpath = System.getProperty("java.class.path");
+    classpath = classpath + File.pathSeparator + "./src/test/resources";
+    if (addClassPaths != null) {
+      for (String addClasspath : addClassPaths) {
+        classpath = classpath.concat(File.pathSeparatorChar + addClasspath);
+      }
+    }
+    String className = clazz.getCanonicalName();
+    ProcessBuilder builder =
+        new ProcessBuilder(javaBin, "-cp", classpath, className, param);
+    builder.redirectInput(ProcessBuilder.Redirect.INHERIT);
+    builder.redirectOutput(output);
+    builder.redirectError(output);
+    process = builder.start();
+  }
+
+  /**
+   * Asks the process to terminate without waiting for it to exit, so several
+   * processes can run their shutdown hooks at the same time.
+   */
+  public void destroy() {
+    if (process != null) {
+      process.destroy();
+    }
   }
 
   public void stop() throws InterruptedException {

@@ -43,9 +43,9 @@ import org.apache.hadoop.security.ssl.SSLFactory;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.StringUtils;
-import org.junit.AfterClass;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -106,7 +106,7 @@ public class TestSSLHttpServer extends HttpServerFunctionalTest {
   static final String INCLUDED_PROTOCOLS = "TLSv1.2";
   static final String INCLUDED_PROTOCOLS_JDK11 = "TLSv1.3,TLSv1.2";
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws Exception {
     turnOnSSLDebugLogging();
     storeHttpsCipherSuites();
@@ -136,8 +136,10 @@ public class TestSSLHttpServer extends HttpServerFunctionalTest {
 
   private static void setupServer(Configuration conf, Configuration sslConf)
       throws IOException, URISyntaxException {
-    conf.set(SSLFactory.SSL_ENABLED_PROTOCOLS_KEY, INCLUDED_PROTOCOLS);
-    sslConf.set(SSLFactory.SSL_ENABLED_PROTOCOLS_KEY, INCLUDED_PROTOCOLS);
+    String protocols = Shell.isJavaVersionAtLeast(11)
+        ? INCLUDED_PROTOCOLS_JDK11 : INCLUDED_PROTOCOLS;
+    conf.set(SSLFactory.SSL_ENABLED_PROTOCOLS_KEY, protocols);
+    sslConf.set(SSLFactory.SSL_ENABLED_PROTOCOLS_KEY, protocols);
     server = new HttpServer2.Builder().setName("test")
         .addEndpoint(new URI("https://localhost")).setConf(conf)
         .keyPassword(
@@ -149,14 +151,16 @@ public class TestSSLHttpServer extends HttpServerFunctionalTest {
             sslConf.get(SSL_SERVER_TRUSTSTORE_PROP_PREFIX + ".location"),
             sslConf.get(SSL_SERVER_TRUSTSTORE_PROP_PREFIX + ".password"),
             sslConf.get(SSL_SERVER_TRUSTSTORE_PROP_PREFIX + ".type", "jks"))
-        .excludeCiphers(sslConf.get("ssl.server.exclude.cipher.list")).build();
+        .excludeCiphers(sslConf.get("ssl.server.exclude.cipher.list"))
+        .includeCiphers(sslConf.get("ssl.server.include.cipher.list"))
+        .build();
     server.addServlet(SERVLET_NAME_ECHO, SERVLET_PATH_ECHO, EchoServlet.class);
     server.addServlet(SERVLET_NAME_LONGHEADER, SERVLET_PATH_LONGHEADER,
         LongHeaderServlet.class);
     server.start();
   }
 
-  @AfterClass
+  @AfterAll
   public static void cleanup() throws Exception {
     server.stop();
     FileUtil.fullyDelete(new File(BASEDIR));
@@ -286,7 +290,7 @@ public class TestSSLHttpServer extends HttpServerFunctionalTest {
     URL url = new URL(baseUrl, SERVLET_PATH_ECHO + "?a=b&c=d");
     HttpsURLConnection conn = getConnectionWithSSLSocketFactory(url,
         EXCLUDED_CIPHERS);
-    assertFalse("excludedCipher list is empty", EXCLUDED_CIPHERS.isEmpty());
+    assertFalse(EXCLUDED_CIPHERS.isEmpty(), "excludedCipher list is empty");
     try {
       readFromConnection(conn);
       fail("No Ciphers in common, SSLHandshake must fail.");
@@ -306,8 +310,7 @@ public class TestSSLHttpServer extends HttpServerFunctionalTest {
     HttpsURLConnection conn =
         getConnectionWithPreferredProtocolSSLSocketFactory(url,
             includedProtocols);
-    assertFalse("included protocol list is empty",
-        includedProtocols.isEmpty());
+    assertFalse(includedProtocols.isEmpty(), "included protocol list is empty");
 
     readFromConnection(conn);
 
@@ -351,7 +354,7 @@ public class TestSSLHttpServer extends HttpServerFunctionalTest {
       IOException, GeneralSecurityException {
     URL url = new URL(baseUrl, SERVLET_PATH_ECHO + "?a=b&c=d");
     HttpsURLConnection conn = getConnectionWithSSLSocketFactory(url, ciphers);
-    assertFalse("excludedCipher list is empty", ciphers.isEmpty());
+    assertFalse(ciphers.isEmpty(), "excludedCipher list is empty");
     String out = readFromConnection(conn);
     assertEquals(out, "a:b\nc:d\n");
     LOG.info("At least one additional enabled cipher than excluded ciphers,"

@@ -27,29 +27,34 @@ import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.servlet.ServletConfig;
 import javax.servlet.ServletContext;
-import javax.ws.rs.core.HttpHeaders;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 
-import org.eclipse.jetty.util.ajax.JSON;
+import com.fasterxml.jackson.core.type.TypeReference;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 import org.xml.sax.InputSource;
 
+import org.apache.hadoop.thirdparty.com.google.common.net.HttpHeaders;
 import org.apache.hadoop.thirdparty.com.google.common.base.Strings;
 
 import org.apache.hadoop.http.HttpServer2;
+import org.apache.hadoop.util.JsonUtils;
 import org.apache.hadoop.util.XMLUtils;
 
-import org.junit.BeforeClass;
-import org.junit.Test;
-import org.mockito.Mockito;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
 
-import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
-import static org.junit.Assert.*;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Basic test case that the ConfServlet can write configuration
@@ -64,7 +69,7 @@ public class TestConfServlet {
       new HashMap<String, String>();
   private static final Map<String, String> MASK_PROPERTIES = new HashMap<>();
 
-  @BeforeClass
+  @BeforeAll
   public static void initTestProperties() {
     TEST_PROPERTIES.put("test.key1", "value1");
     TEST_PROPERTIES.put("test.key2", "value2");
@@ -101,10 +106,10 @@ public class TestConfServlet {
     verifyMap.put("application/xml", ConfServlet.FORMAT_XML);
     verifyMap.put("application/json", ConfServlet.FORMAT_JSON);
 
-    HttpServletRequest request = Mockito.mock(HttpServletRequest.class);
+    HttpServletRequest request = mock(HttpServletRequest.class);
     for(String contentTypeExpected : verifyMap.keySet()) {
       String contenTypeActual = verifyMap.get(contentTypeExpected);
-      Mockito.when(request.getHeader(HttpHeaders.ACCEPT))
+      when(request.getHeader(HttpHeaders.ACCEPT))
           .thenReturn(contentTypeExpected);
       assertEquals(contenTypeActual,
           ConfServlet.parseAcceptHeader(request));
@@ -160,9 +165,9 @@ public class TestConfServlet {
         } else {
           // if property name is not empty, and it's not in configuration
           // expect proper error code and error message is set to the response
-          Mockito.verify(response).sendError(
-              Mockito.eq(HttpServletResponse.SC_NOT_FOUND),
-              Mockito.eq("Property " + propertyName + " not found"));
+          verify(response).sendError(
+              eq(HttpServletResponse.SC_NOT_FOUND),
+              eq("Property " + propertyName + " not found"));
         }
       }
     } finally {
@@ -204,8 +209,9 @@ public class TestConfServlet {
     ConfServlet.writeResponse(getTestConf(), sw, "json");
     String json = sw.toString();
     boolean foundSetting = false;
-    Object parsed = JSON.parse(json);
-    Object[] properties = ((Map<String, Object[]>)parsed).get("properties");
+    Map<String, Object[]> parsed = JsonUtils.parse(json,
+        new TypeReference<Map<String, Object[]>>() {});
+    Object[] properties = parsed.get("properties");
     for (Object o : properties) {
       Map<String, Object> propertyInfo = (Map<String, Object>)o;
       String key = (String)propertyInfo.get("key");

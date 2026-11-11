@@ -31,13 +31,17 @@ import java.util.List;
 import java.util.Map;
 
 import java.util.concurrent.Callable;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.apache.hadoop.fs.statistics.IOStatisticAssertions;
 import org.apache.hadoop.fs.statistics.MeanStatistic;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.metrics2.lib.MutableCounterLong;
 import org.apache.hadoop.metrics2.lib.MutableRate;
+import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.LambdaTestUtils;
-import org.junit.Assert;
+import org.junit.jupiter.api.Assertions;
 
 import org.apache.hadoop.io.DataInputBuffer;
 import org.apache.hadoop.io.DataOutputBuffer;
@@ -52,13 +56,15 @@ import org.apache.hadoop.security.token.SecretManager.InvalidToken;
 import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenSecretManager.DelegationTokenInformation;
 import org.apache.hadoop.util.Daemon;
+import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.Time;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 
 public class TestDelegationToken {
   private static final Logger LOG =
@@ -126,7 +132,7 @@ public class TestDelegationToken {
     @Override
     protected void removeStoredMasterKey(DelegationKey key) {
       isRemoveStoredMasterKeyCalled = true;
-      Assert.assertFalse(key.equals(allKeys.get(currentId)));
+      Assertions.assertFalse(key.equals(allKeys.get(currentId)));
     }
 
     @Override
@@ -263,10 +269,10 @@ public class TestDelegationToken {
                            Class<? extends Throwable> except) {
     try {
       action.run();
-      Assert.fail("action did not throw " + except);
+      Assertions.fail("action did not throw " + except);
     } catch (Throwable th) {
       LOG.info("Caught an exception: ", th);
-      assertEquals("action threw wrong exception", except, th.getClass());
+      assertEquals(except, th.getClass(), "action threw wrong exception");
     }
   }
 
@@ -349,7 +355,7 @@ public class TestDelegationToken {
       final Token<TestDelegationTokenIdentifier> token = 
         generateDelegationToken(
           dtSecretManager, "SomeUser", "JobTracker");
-      Assert.assertTrue(dtSecretManager.isStoreNewTokenCalled);
+      Assertions.assertTrue(dtSecretManager.isStoreNewTokenCalled);
       // Fake renewer should not be able to renew
       shouldThrow(new PrivilegedExceptionAction<Object>() {
         @Override
@@ -359,21 +365,21 @@ public class TestDelegationToken {
         }
       }, AccessControlException.class);
       long time = dtSecretManager.renewToken(token, "JobTracker");
-      Assert.assertTrue(dtSecretManager.isUpdateStoredTokenCalled);
-      assertTrue("renew time is in future", time > Time.now());
+      Assertions.assertTrue(dtSecretManager.isUpdateStoredTokenCalled);
+      assertTrue(time > Time.now(), "renew time is in future");
       TestDelegationTokenIdentifier identifier = 
         new TestDelegationTokenIdentifier();
       byte[] tokenId = token.getIdentifier();
       identifier.readFields(new DataInputStream(
           new ByteArrayInputStream(tokenId)));
-      Assert.assertTrue(null != dtSecretManager.retrievePassword(identifier));
+      Assertions.assertTrue(null != dtSecretManager.retrievePassword(identifier));
       LOG.info("Sleep to expire the token");
       Thread.sleep(2000);
       //Token should be expired
       try {
         dtSecretManager.retrievePassword(identifier);
         //Should not come here
-        Assert.fail("Token should have expired");
+        Assertions.fail("Token should have expired");
       } catch (InvalidToken e) {
         //Success
       }
@@ -411,7 +417,7 @@ public class TestDelegationToken {
         }
       }, AccessControlException.class);
       dtSecretManager.cancelToken(token, "JobTracker");
-      Assert.assertTrue(dtSecretManager.isRemoveStoredTokenCalled);
+      Assertions.assertTrue(dtSecretManager.isRemoveStoredTokenCalled);
       shouldThrow(new PrivilegedExceptionAction<Object>() {
         @Override
         public Object run() throws Exception {
@@ -424,7 +430,89 @@ public class TestDelegationToken {
     }
   }
 
-  @Test(timeout = 10000)
+  /**
+   * Returns a secret manager that runs onFail on every incrementCurrentKeyId()
+   * call after the first. The first call comes from startThreads(); the next
+   * one comes from rollMasterKey() in the remover thread.
+   */
+  private static TestDelegationTokenSecretManager failingAfterFirstKeyId(
+      Runnable onFail) {
+    AtomicInteger keyIdCalls = new AtomicInteger();
+    return new TestDelegationTokenSecretManager(3600000, 3600000, 3600000,
+        3600000) {
+      @Override
+      protected int incrementCurrentKeyId() {
+        if (keyIdCalls.incrementAndGet() > 1) {
+          onFail.run();
+        }
+        return super.incrementCurrentKeyId();
+      }
+    };
+  }
+
+  /**
+   * An unexpected exception in the expired token remover thread must go
+   * through ExitUtil so that tests can intercept it.
+   */
+  @Test
+  @Timeout(value = 30)
+  public void testExpiredTokenRemoverFailureTerminates() throws Exception {
+    ExitUtil.disableSystemExit();
+    TestDelegationTokenSecretManager dtSecretManager =
+        failingAfterFirstKeyId(() -> {
+          throw new RuntimeException("injected key id failure");
+        });
+    try {
+      dtSecretManager.startThreads();
+      GenericTestUtils.waitFor(ExitUtil::terminateCalled, 100, 10000);
+      ExitUtil.ExitException ee = ExitUtil.getFirstExitException();
+      assertEquals(-1, ee.getExitCode());
+      assertThat(ee.getCause()).hasMessage("injected key id failure");
+    } finally {
+      dtSecretManager.stopThreads();
+      ExitUtil.enableSystemExit();
+      ExitUtil.resetFirstExitException();
+    }
+  }
+
+  /**
+   * An exception raised because stopThreads() interrupted the expired token
+   * remover thread must not terminate the process.
+   */
+  @Test
+  @Timeout(value = 30)
+  public void testExpiredTokenRemoverFailureWhileStoppingDoesNotTerminate()
+      throws Exception {
+    ExitUtil.disableSystemExit();
+    CountDownLatch blocked = new CountDownLatch(1);
+    TestDelegationTokenSecretManager dtSecretManager =
+        failingAfterFirstKeyId(() -> {
+          // Block in the remover thread until stopThreads() interrupts it,
+          // as a backing store call would.
+          blocked.countDown();
+          try {
+            new CountDownLatch(1).await();
+          } catch (InterruptedException e) {
+            throw new RuntimeException("interrupted", e);
+          }
+        });
+    ExitUtil.ExitException ee;
+    try {
+      dtSecretManager.startThreads();
+      assertTrue(blocked.await(10, TimeUnit.SECONDS));
+    } finally {
+      // stopThreads() joins the remover thread, so its outcome is final here.
+      dtSecretManager.stopThreads();
+      ee = ExitUtil.getFirstExitException();
+      ExitUtil.enableSystemExit();
+      ExitUtil.resetFirstExitException();
+    }
+    assertThat(ee).as("terminate should not be called while stopping")
+        .isNull();
+  }
+
+  @Test
+  @Timeout(value = 10)
   public void testRollMasterKey() throws Exception {
     TestDelegationTokenSecretManager dtSecretManager = 
       new TestDelegationTokenSecretManager(800,
@@ -439,7 +527,7 @@ public class TestDelegationToken {
       int prevNumKeys = dtSecretManager.getAllKeys().length;
       
       dtSecretManager.rollMasterKey();
-      Assert.assertTrue(dtSecretManager.isStoreNewMasterKeyCalled);
+      Assertions.assertTrue(dtSecretManager.isStoreNewMasterKeyCalled);
 
       //after rolling, the length of the keys list must increase
       int currNumKeys = dtSecretManager.getAllKeys().length;
@@ -456,7 +544,7 @@ public class TestDelegationToken {
       byte[] newPasswd = 
         dtSecretManager.retrievePassword(identifier);
       //compare the passwords
-      Assert.assertEquals(oldPasswd, newPasswd);
+      Assertions.assertEquals(oldPasswd, newPasswd);
       // wait for keys to expire
       while(!dtSecretManager.isRemoveStoredMasterKeyCalled) {
         Thread.sleep(200);
@@ -494,7 +582,7 @@ public class TestDelegationToken {
       //try to select a token with a given service name (created earlier)
       Token<TestDelegationTokenIdentifier> t = 
         ds.selectToken(new Text("MY-SERVICE1"), tokens);
-      Assert.assertEquals(t, token1);
+      Assertions.assertEquals(t, token1);
     } finally {
       dtSecretManager.stopThreads();
     }
@@ -532,17 +620,17 @@ public class TestDelegationToken {
       }
       Map<TestDelegationTokenIdentifier, DelegationTokenInformation> tokenCache = dtSecretManager
           .getAllTokens();
-      Assert.assertEquals(numTokensPerThread*numThreads, tokenCache.size());
+      Assertions.assertEquals(numTokensPerThread*numThreads, tokenCache.size());
       Iterator<TestDelegationTokenIdentifier> iter = tokenCache.keySet().iterator();
       while (iter.hasNext()) {
         TestDelegationTokenIdentifier id = iter.next();
         DelegationTokenInformation info = tokenCache.get(id);
-        Assert.assertTrue(info != null);
+        Assertions.assertTrue(info != null);
         DelegationKey key = dtSecretManager.getKey(id);
-        Assert.assertTrue(key != null);
+        Assertions.assertTrue(key != null);
         byte[] storedPassword = dtSecretManager.retrievePassword(id);
         byte[] password = dtSecretManager.createPassword(id, key);
-        Assert.assertTrue(Arrays.equals(password, storedPassword));
+        Assertions.assertTrue(Arrays.equals(password, storedPassword));
         //verify by secret manager api
         dtSecretManager.verifyToken(id, password);
       }
@@ -561,10 +649,10 @@ public class TestDelegationToken {
         "theuser"), null, null);
     Token<TestDelegationTokenIdentifier> token = new Token<TestDelegationTokenIdentifier>(
         dtId, dtSecretManager);
-    Assert.assertTrue(token != null);
+    Assertions.assertTrue(token != null);
     try {
       dtSecretManager.renewToken(token, "");
-      Assert.fail("Renewal must not succeed");
+      Assertions.fail("Renewal must not succeed");
     } catch (IOException e) {
       //PASS
     }
@@ -618,8 +706,8 @@ public class TestDelegationToken {
     DelegationKey key1 = new DelegationKey(1111, 2222, "keyBytes".getBytes());
     DelegationKey key2 = new DelegationKey(1111, 2222, "keyBytes".getBytes());
     DelegationKey key3 = new DelegationKey(3333, 2222, "keyBytes".getBytes());
-    Assert.assertEquals(key1, key2);
-    Assert.assertFalse(key2.equals(key3));
+    Assertions.assertEquals(key1, key2);
+    Assertions.assertFalse(key2.equals(key3));
   }
 
   @Test

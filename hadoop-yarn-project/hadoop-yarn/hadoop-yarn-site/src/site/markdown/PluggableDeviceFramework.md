@@ -29,7 +29,7 @@ Some of the pain points for current device plugin development and integration
  are listed below:
 
 
-* At least 6 classes to be implemented (If you wanna support
+* At least 6 classes to be implemented (If you want to support
 Docker, you’ll implement one more “DockerCommandPlugin”).
 * When implementing the “ResourceHandler” interface,
 the developer must understand the YARN NM internal concepts like container
@@ -54,18 +54,18 @@ Before we go through how to implement
 your own device plugin, let's first see how to use an existing plugin.
 
 
-As an example, the new framework includes a sample implementation of Nvidia
-GPU plugin supporting detecting Nvidia GPUs, the custom scheduler and isolating
-containers run with both YARN cgroups and Nvidia Docker runtime v2.
+As an example, the new framework includes a sample implementation of NVIDIA
+GPU plugin supporting detecting NVIDIA GPUs, the custom scheduler and isolating
+containers run with both YARN cgroups and NVIDIA Docker runtime v2.
 
 ### Prerequisites
 1. The pluggable device framework depends on LinuxContainerExecutor to handle
 resource isolation and Docker stuff. So LCE and Docker enabled on YARN is a
 must.
-See [Using CGroups with YARN](./NodeManagerCgroups.html) and [Docker on YARN](./DockerContainers.html)
+See [Using Cgroups with YARN](./NodeManagerCgroups.html) and [Docker on YARN](./DockerContainers.html)
 
-2. The sample plugin `NvidiaGPUPluginForRuntimeV2` requires Nvidia GPU drivers
-and Nvidia Docker runtime v2 installed in the nodes. See Nvidia official
+2. The sample plugin `NvidiaGPUPluginForRuntimeV2` requires NVIDIA GPU drivers
+and NVIDIA Docker runtime v2 installed in the nodes. See NVIDIA official
 documents for this.
 
 3. If you use YARN capacity scheduler, below
@@ -94,7 +94,7 @@ And then enable the isolation native module in `container-executor.cfg`:
 #  devices.denied-numbers=## Blacklisted devices not permitted to use. The format is comma separated "majorNumber:minorNumber". For instance, "195:1,195:2". Leave it empty means default devices reported by device plugin are all allowed.
 ```
 
-### Configure Sample Nvidia GPU Plugin
+### Configure Sample NVIDIA GPU Plugin
 The pluggable device framework loads one plugin and talks to it to know
 which resource name the plugin is handling. And the resource name should be
 pre-defined in `resource-types.xml`. Here we already know the resource name is

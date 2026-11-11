@@ -17,6 +17,7 @@
  */
 package org.apache.hadoop.hdfs.server.federation.metrics;
 
+import static org.apache.hadoop.hdfs.server.federation.router.async.utils.AsyncUtil.syncReturn;
 import static org.apache.hadoop.util.Time.now;
 
 import java.io.IOException;
@@ -25,6 +26,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Function;
@@ -60,7 +62,6 @@ import org.apache.hadoop.ipc.StandbyException;
 import org.apache.hadoop.metrics2.util.MBeans;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.util.VersionInfo;
-import org.eclipse.jetty.util.ajax.JSON;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -384,6 +385,16 @@ public class NamenodeBeanMetrics
   }
 
   @Override
+  public long getNumberOfBadlyDistributedBlocks() {
+    try {
+      return getRBFMetrics().getNumberOfBadlyDistributedBlocks();
+    } catch (IOException e) {
+      LOG.debug("Failed to get number of badly distributed blocks", e);
+    }
+    return 0;
+  }
+
+  @Override
   public long getHighestPriorityLowRedundancyReplicatedBlocks() {
     try {
       return getRBFMetrics().getHighestPriorityLowRedundancyReplicatedBlocks();
@@ -468,6 +479,9 @@ public class NamenodeBeanMetrics
           this.router.getRpcServer().getClientProtocolModule();
       DatanodeStorageReport[] datanodeStorageReports =
           clientProtocol.getDatanodeStorageReport(type, false, dnReportTimeOut);
+      if (router.getRpcServer().isAsync()) {
+        datanodeStorageReports = syncReturn(DatanodeStorageReport[].class);
+      }
       for (DatanodeStorageReport datanodeStorageReport : datanodeStorageReports) {
         DatanodeInfo node = datanodeStorageReport.getDatanodeInfo();
         StorageReport[] storageReports = datanodeStorageReport.getStorageReports();
@@ -476,12 +490,13 @@ public class NamenodeBeanMetrics
         innerinfo.put("infoSecureAddr", node.getInfoSecureAddr());
         innerinfo.put("xferaddr", node.getXferAddr());
         innerinfo.put("location", node.getNetworkLocation());
+        innerinfo.put("uuid", Optional.ofNullable(node.getDatanodeUuid()).orElse(""));
         innerinfo.put("lastContact", getLastContact(node));
         innerinfo.put("usedSpace", node.getDfsUsed());
         innerinfo.put("adminState", node.getAdminState().toString());
         innerinfo.put("nonDfsUsedSpace", node.getNonDfsUsed());
         innerinfo.put("capacity", node.getCapacity());
-        innerinfo.put("numBlocks", -1); // node.numBlocks()
+        innerinfo.put("numBlocks", node.getNumBlocks());
         innerinfo.put("version", (node.getSoftwareVersion() == null ?
                         "UNKNOWN" : node.getSoftwareVersion()));
         innerinfo.put("used", node.getDfsUsed());
@@ -492,6 +507,7 @@ public class NamenodeBeanMetrics
         innerinfo.put("volfails", -1); // node.getVolumeFailures()
         innerinfo.put("blockPoolUsedPercentStdDev",
             Util.getBlockPoolUsedPercentStdDev(storageReports));
+        innerinfo.put("lastBlockReport", getLastBlockReport(node));
         info.put(node.getXferAddrWithHostname(),
             Collections.unmodifiableMap(innerinfo));
       }
@@ -499,10 +515,10 @@ public class NamenodeBeanMetrics
       LOG.error("Cannot get {} nodes, Router in safe mode", type);
     } catch (SubClusterTimeoutException e) {
       LOG.error("Cannot get {} nodes, subclusters timed out responding", type);
-    } catch (IOException e) {
+    } catch (Exception e) {
       LOG.error("Cannot get " + type + " nodes", e);
     }
-    return JSON.toString(info);
+    return JSON.getDefault().toJSON(info);
   }
 
   @Override
@@ -795,6 +811,10 @@ public class NamenodeBeanMetrics
     return (now() - node.getLastUpdate()) / 1000;
   }
 
+  private long getLastBlockReport(DatanodeInfo node) {
+    return (now() - node.getLastBlockReportTime()) / 60000;
+  }
+
   /////////////////////////////////////////////////////////
   // NameNodeStatusMXBean
   /////////////////////////////////////////////////////////
@@ -881,6 +901,11 @@ public class NamenodeBeanMetrics
     } catch (IOException e) {
       LOG.debug("Failed to get number of paths to be processed by sps", e);
     }
+    return 0;
+  }
+
+  @Override
+  public float getReconstructionQueuesInitProgress() {
     return 0;
   }
 

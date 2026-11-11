@@ -22,7 +22,9 @@ import org.apache.hadoop.metrics2.MetricsSystem;
 import org.apache.hadoop.metrics2.annotation.Metric;
 import org.apache.hadoop.metrics2.annotation.Metrics;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
+import org.apache.hadoop.metrics2.lib.MetricsRegistry;
 import org.apache.hadoop.metrics2.lib.MutableCounterLong;
+import org.apache.hadoop.metrics2.lib.MutableGaugeInt;
 import org.apache.hadoop.metrics2.lib.MutableRate;
 
 import java.util.concurrent.ThreadLocalRandom;
@@ -37,6 +39,7 @@ public class NameserviceRPCMetrics implements NameserviceRPCMBean {
   public final static String NAMESERVICE_RPC_METRICS_PREFIX = "NameserviceActivity-";
 
   private final String nsId;
+  private final MetricsRegistry registry = new MetricsRegistry("NameserviceRPCActivity");
 
   @Metric("Time for the Router to proxy an operation to the Nameservice")
   private MutableRate proxy;
@@ -49,19 +52,26 @@ public class NameserviceRPCMetrics implements NameserviceRPCMBean {
   private MutableCounterLong proxyOpFailureCommunicate;
   @Metric("Number of operations to hit no namenodes available")
   private MutableCounterLong proxyOpNoNamenodes;
+  @Metric("Number of operations to hit permit limits")
+  private MutableCounterLong proxyOpPermitRejected;
+  @Metric("Number of operations accepted to hit a namenode")
+  private MutableCounterLong proxyOpPermitAccepted;
+  @Metric("Async handler queue size")
+  private MutableGaugeInt asyncHandlerQueueSize;
 
   public NameserviceRPCMetrics(Configuration conf, String nsId) {
-    this.nsId = nsId;
+    this.nsId = NAMESERVICE_RPC_METRICS_PREFIX + nsId;
+    registry.tag("ns", "Nameservice", nsId);
   }
 
   public static NameserviceRPCMetrics create(Configuration conf,
       String nameService) {
     MetricsSystem ms = DefaultMetricsSystem.instance();
-    String name = NAMESERVICE_RPC_METRICS_PREFIX + (nameService.isEmpty()
-        ? "UndefinedNameService"+ ThreadLocalRandom.current().nextInt()
-        : nameService);
-    return ms.register(name, "HDFS Federation NameService RPC Metrics",
-        new NameserviceRPCMetrics(conf, name));
+    String nsId = (nameService.isEmpty() ?
+        "UndefinedNameService" + ThreadLocalRandom.current().nextInt() :
+        nameService);
+    return ms.register(NAMESERVICE_RPC_METRICS_PREFIX + nsId,
+        "HDFS Federation NameService RPC Metrics", new NameserviceRPCMetrics(conf, nsId));
   }
 
   public void incrProxyOpFailureStandby() {
@@ -91,6 +101,32 @@ public class NameserviceRPCMetrics implements NameserviceRPCMBean {
     return proxyOpNoNamenodes.value();
   }
 
+  public void incrProxyOpPermitRejected() {
+    proxyOpPermitRejected.incr();
+  }
+
+  @Override
+  public long getProxyOpPermitRejected() {
+    return proxyOpPermitRejected.value();
+  }
+
+  public void incrProxyOpPermitAccepted() {
+    proxyOpPermitAccepted.incr();
+  }
+
+  @Override
+  public long getProxyOpPermitAccepted() {
+    return proxyOpPermitAccepted.value();
+  }
+
+  public void setAsyncHandlerQueueSize(int size) {
+    asyncHandlerQueueSize.set(size);
+  }
+
+  @Override
+  public int getAsyncHandlerQueueSize() {
+    return asyncHandlerQueueSize.value();
+  }
 
   /**
    * Add the time to proxy an operation from the moment the Router sends it to

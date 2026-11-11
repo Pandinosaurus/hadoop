@@ -30,6 +30,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
@@ -59,7 +60,6 @@ import org.apache.hadoop.security.SaslRpcServer.QualityOfProtection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import org.apache.hadoop.thirdparty.com.google.common.base.Charsets;
 import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
 import org.apache.hadoop.thirdparty.com.google.common.collect.Maps;
 import org.apache.hadoop.thirdparty.com.google.common.net.InetAddresses;
@@ -102,12 +102,17 @@ public final class DataTransferSaslUtil {
     Set<String> requestedQop = ImmutableSet.copyOf(Arrays.asList(
         saslProps.get(Sasl.QOP).split(",")));
     String negotiatedQop = sasl.getNegotiatedQop();
-    LOG.debug("Verifying QOP, requested QOP = {}, negotiated QOP = {}",
-        requestedQop, negotiatedQop);
+    LOG.debug("{}: Verifying QOP: requested = {}, negotiated = {}",
+        sasl, requestedQop, negotiatedQop);
+    // Treat null negotiated QOP as "auth" for the purpose of verification
+    // Code elsewhere does the same implicitly
+    if(negotiatedQop == null) {
+      negotiatedQop = "auth";
+    }
     if (!requestedQop.contains(negotiatedQop)) {
       throw new IOException(String.format("SASL handshake completed, but " +
           "channel does not have acceptable quality of protection, " +
-          "requested = %s, negotiated = %s", requestedQop, negotiatedQop));
+          "requested = %s, negotiated(effective) = %s", requestedQop, negotiatedQop));
     }
   }
 
@@ -147,7 +152,7 @@ public final class DataTransferSaslUtil {
    * @return key encoded as SASL password
    */
   public static char[] encryptionKeyToPassword(byte[] encryptionKey) {
-    return new String(Base64.encodeBase64(encryptionKey, false), Charsets.UTF_8)
+    return new String(Base64.encodeBase64(encryptionKey, false), StandardCharsets.UTF_8)
         .toCharArray();
   }
 
@@ -155,15 +160,22 @@ public final class DataTransferSaslUtil {
    * Returns InetAddress from peer.  The getRemoteAddressString has the form
    * [host][/ip-address]:port.  The host may be missing.  The IP address (and
    * preceding '/') may be missing.  The port preceded by ':' is always present.
+   * An IPv6 address may be enclosed in brackets.
    *
    * @return InetAddress from peer
    */
   public static InetAddress getPeerAddress(Peer peer) {
-    String remoteAddr = peer.getRemoteAddressString().split(":")[0];
-    int slashIdx = remoteAddr.indexOf('/');
-    return InetAddresses.forString(slashIdx != -1 ?
-        remoteAddr.substring(slashIdx + 1, remoteAddr.length()) :
-        remoteAddr);
+    String remoteAddr = peer.getRemoteAddressString();
+    // The port follows the last ':', IPv6 addresses contain ':' themselves.
+    int colonIdx = remoteAddr.lastIndexOf(':');
+    if (colonIdx != -1) {
+      remoteAddr = remoteAddr.substring(0, colonIdx);
+    }
+    remoteAddr = remoteAddr.substring(remoteAddr.indexOf('/') + 1);
+    if (remoteAddr.startsWith("[") && remoteAddr.endsWith("]")) {
+      remoteAddr = remoteAddr.substring(1, remoteAddr.length() - 1);
+    }
+    return InetAddresses.forString(remoteAddr);
   }
 
   /**

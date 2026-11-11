@@ -53,6 +53,22 @@ Generic information includes application level data such as
 Generic data is published by the YARN Resource Manager to the timeline store
  and used by its web-UI to display information about completed applications.
 
+#### Custom Resource Allocations
+
+Container history includes custom resource allocations such as `yarn.io/gpu`.
+The `YARN_CONTAINER_ALLOCATED_RESOURCES` field in a container entity's `otherinfo`
+maps each custom resource name to its `value` and `units`. The existing memory
+and vcore fields remain unchanged. The field is absent when no nonzero custom
+resource allocations exist.
+
+To include these allocations in application history reports, configure the
+Application History Server and standalone history clients with the same
+[resource types](./ResourceModel.html) as the ResourceManager, using
+`resource-types.xml`. Values are converted to the configured units when read.
+Unknown resource types are skipped in reports with a debug log; their allocations
+remain available in the raw timeline entity. Older entities without this field
+remain readable, but allocations omitted by older publishers cannot be recovered.
+
 ### <a name="Current_Status"></a>Current Status and Future Plans
 
 
@@ -859,7 +875,7 @@ Below is the elements of a single event object.  Note that `value` of
 | Item | Data Type | Description|
 |:---- |:---- |:---- |
 | `eventtype` | string  | The event type |
-| `eventinfo` | map | The information of the event, which is orgainzied in a map of `key` : `value` |
+| `eventinfo` | map | The information of the event, which is organized in a map of `key` : `value` |
 | `timestamp` | long | The timestamp of the event |
 
 ### Response Examples:
@@ -1317,7 +1333,7 @@ None
 | `queue` | string  | The queue to which the application submitted |
 | `appState` | string | The application state according to the ResourceManager - valid values are members of the YarnApplicationState enum: `FINISHED`, `FAILED`, `KILLED` |
 | `finalStatus` | string | The final status of the application if finished - reported by the application itself - valid values are: `UNDEFINED`, `SUCCEEDED`, `FAILED`, `KILLED` |
-| `progress` | float | The reported progress of the application as a percent. Long-lived YARN services may not provide a meaninful value here —or use it as a metric of actual vs desired container counts |
+| `progress` | float | The reported progress of the application as a percent. Long-lived YARN services may not provide a meaningful value here —or use it as a metric of actual vs desired container counts |
 | `trackingUrl` | string | The web URL of the application (via the RM Proxy) |
 | `originalTrackingUrl` | string | The actual web URL of the application |
 | `diagnosticsInfo` | string | Detailed diagnostics information on a completed application|
@@ -2019,7 +2035,7 @@ querying some entities, such as Domains; here the API deliberately
 downgrades permission-denied outcomes as empty and not-founds responses.
 This hides details of other domains from an unauthorized caller.
 1. If the content of timeline entity PUT operations is invalid,
-this failure *will not* result in an HTTP error code being retured.
+this failure *will not* result in an HTTP error code being returned.
 A status code of 200 will be returned —however, there will be an error code
 in the list of failed entities for each entity which could not be added.
 

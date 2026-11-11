@@ -63,6 +63,15 @@
 </property>
 
 <property>
+  <name>mapreduce.task.spill.files.count.limit</name>
+  <value>-1</value>
+  <description>Number of spill files that can be created by a MapTask.
+  After breaching this, task will fail. Default value for this config is -1
+  which indicates that there is no limit on number of spill files being
+  created</description>
+</property>
+
+<property>
   <name>mapreduce.job.local-fs.single-disk-limit.bytes</name>
   <value>-1</value>
   <description>Enable an in task monitor thread to watch for single disk
@@ -455,7 +464,7 @@
   <value>INFO</value>
   <description>The logging level for the MR ApplicationMaster. The allowed
   levels are: OFF, FATAL, ERROR, WARN, INFO, DEBUG, TRACE and ALL.
-  The setting here could be overriden if "mapreduce.job.log4j-properties-file"
+  The setting here could be overridden if "mapreduce.job.log4j-properties-file"
   is set.
   </description>
 </property>
@@ -1444,7 +1453,7 @@
     <value></value>
     <description>Used to override the default settings of log4j in container-log4j.properties
     for NodeManager. Like container-log4j.properties, it requires certain
-    framework appenders properly defined in this overriden file. The file on the
+    framework appenders properly defined in this overridden file. The file on the
     path will be added to distributed cache and classpath. If no-scheme is given
     in the path, it defaults to point to a log4j file on the local FS.
     </description>
@@ -1809,6 +1818,18 @@
    <name>mapreduce.jvm.system-properties-to-log</name>
    <value>os.name,os.version,java.home,java.runtime.version,java.vendor,java.version,java.vm.name,java.class.path,java.io.tmpdir,user.dir,user.name</value>
    <description>Comma-delimited list of system properties to log on mapreduce JVM start</description>
+</property>
+
+<property>
+  <name>mapreduce.jvm.add-opens-as-default</name>
+  <value>false</value>
+  <description>Since on JDK17 it's no longer possible to use the reflection API to
+    access non-public fields and methods add-opens flags should be added to MR AM
+    and map/reduce containers regardless of the user specified java opts. Setting
+    this to true will add the flags to the container launch commands on nodes with
+    JDK17 or higher. Defaults to false, and the setting has no effect on nodes using
+    JDK16 and before.
+  </description>
 </property>
 
 <!-- jobhistory properties -->
@@ -2242,23 +2263,63 @@
   </description>
 </property>
 
-<!-- not yet enabled by default.
-
+<!-- use manifest committer for abfs URLs -->
 <property>
   <name>mapreduce.outputcommitter.factory.scheme.abfs</name>
   <value>org.apache.hadoop.fs.azurebfs.commit.AzureManifestCommitterFactory</value>
   <description>
-    The default committer factory for ABFS is for the manifest committer with
-    abfs-specific tuning.
+    The default committer factory for ABFS is the manifest committer with
+    abfs-specific recovery.
   </description>
 </property>
 
+<!-- use manifest committer for gs URLs -->
 <property>
   <name>mapreduce.outputcommitter.factory.scheme.gs</name>
   <value>org.apache.hadoop.mapreduce.lib.output.committer.manifest.ManifestCommitterFactory</value>
   <description>
-    The default committer factory for google cloud storage is for the manifest committer.
+    The default committer factory for google cloud storage is the manifest committer.
   </description>
 </property>
--->
+
+<property>
+  <name>mapreduce.security.enabled</name>
+  <value>false</value>
+  <description>
+    Enables MapReduce Task-Level Security Enforcement
+    When enabled, the Application Master performs validation of user-submitted mapper, reducer, and other task-related classes before launching containers.
+    This mechanism protects the cluster from running disallowed or unsafe task implementations as defined by administrator-controlled policies.
+  </description>
+</property>
+
+<property>
+  <name>mapreduce.security.property-domain</name>
+  <value>mapreduce.job.combine.class,mapreduce.job.combiner.group.comparator.class,mapreduce.job.end-notification.custom-notifier-class,mapreduce.job.inputformat.class,mapreduce.job.map.class,mapreduce.job.map.output.collector.class,mapreduce.job.output.group.comparator.class,mapreduce.job.output.key.class,mapreduce.job.output.key.comparator.class,mapreduce.job.output.value.class,mapreduce.job.outputformat.class,mapreduce.job.partitioner.class,mapreduce.job.reduce.class,mapreduce.map.output.key.class,mapreduce.map.output.value.class</value>
+  <description>
+    MapReduce Task-Level Security Enforcement: Property Domain
+    Defines the set of MapReduce configuration keys that represent user-supplied class names involved in task execution (e.g., mapper, reducer, partitioner).
+    The Application Master examines the values of these properties and checks whether any referenced class is listed in denied tasks.
+    Administrators may override this list to expand or restrict the validation domain.
+  </description>
+</property>
+
+<property>
+  <name>mapreduce.security.denied-tasks</name>
+  <value></value>
+  <description>
+    Specifies the list of disallowed task implementation classes or packages.
+    If a user submits a job whose mapper, reducer, or other task-related classes match any entry in this blacklist.
+  </description>
+</property>
+
+  <property>
+    <name>mapreduce.security.allowed-users</name>
+    <value></value>
+    <description>
+      Specifies users who may bypass the blacklist defined in denied tasks.
+      This whitelist is intended for trusted or system-level workflows that may legitimately require the use of restricted task implementations.
+      If the submitting user is listed here, blacklist enforcement is skipped, although standard Hadoop authentication and ACL checks still apply.
+    </description>
+  </property>
+
 </configuration>

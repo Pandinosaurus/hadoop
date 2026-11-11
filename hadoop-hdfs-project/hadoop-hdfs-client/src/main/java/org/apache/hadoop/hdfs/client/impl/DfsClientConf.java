@@ -166,6 +166,7 @@ public class DfsClientConf {
 
   private final boolean deadNodeDetectionEnabled;
   private final long leaseHardLimitPeriod;
+  private final boolean recoverLeaseOnCloseException;
 
   public DfsClientConf(Configuration conf) {
     // The hdfsTimeout is currently the same as the ipc timeout
@@ -315,6 +316,11 @@ public class DfsClientConf {
         HdfsClientConfigKeys.DFS_CLIENT_PIPELINE_RECOVERY_MAX_RETRIES,
         HdfsClientConfigKeys.DFS_CLIENT_PIPELINE_RECOVERY_MAX_RETRIES_DEFAULT
     );
+
+    recoverLeaseOnCloseException = conf.getBoolean(
+        Write.RECOVER_LEASE_ON_CLOSE_EXCEPTION_KEY,
+        Write.RECOVER_LEASE_ON_CLOSE_EXCEPTION_DEFAULT
+    );
   }
 
   private ByteArrayManager.Conf loadWriteByteArrayManagerConf(
@@ -356,7 +362,7 @@ public class DfsClientConf {
                 classLoader.loadClass(className);
         classes.add(cls);
       } catch (Throwable t) {
-        LOG.warn("Unable to load " + className, t);
+        LOG.warn("Unable to load {}", className, t);
       }
     }
     return classes;
@@ -745,6 +751,10 @@ public class DfsClientConf {
     return maxPipelineRecoveryRetries;
   }
 
+  public boolean getRecoverLeaseOnCloseException() {
+    return recoverLeaseOnCloseException;
+  }
+
   /**
    * Configuration for short-circuit reads.
    */
@@ -856,7 +866,7 @@ public class DfsClientConf {
           DFS_DOMAIN_SOCKET_DISABLE_INTERVAL_SECOND_KEY,
           DFS_DOMAIN_SOCKET_DISABLE_INTERVAL_SECOND_DEFAULT);
       Preconditions.checkArgument(domainSocketDisableIntervalSeconds >= 0,
-          DFS_DOMAIN_SOCKET_DISABLE_INTERVAL_SECOND_KEY + "can't be negative.");
+          DFS_DOMAIN_SOCKET_DISABLE_INTERVAL_SECOND_KEY + " can't be negative.");
 
       keyProviderCacheExpiryMs = conf.getLong(
           DFS_CLIENT_KEY_PROVIDER_CACHE_EXPIRY_MS,

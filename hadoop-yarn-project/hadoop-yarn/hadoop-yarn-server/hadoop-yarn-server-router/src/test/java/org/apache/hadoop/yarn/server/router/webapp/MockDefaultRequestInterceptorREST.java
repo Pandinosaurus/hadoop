@@ -36,7 +36,6 @@ import java.util.stream.Collectors;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 import javax.ws.rs.core.Context;
-import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.Response.Status;
 
@@ -48,6 +47,7 @@ import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AuthorizationException;
 import org.apache.hadoop.thirdparty.com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.thirdparty.com.google.common.net.HttpHeaders;
 import org.apache.hadoop.util.Sets;
 import org.apache.hadoop.util.Time;
 import org.apache.hadoop.yarn.api.protocolrecords.ReservationDeleteRequest;
@@ -102,6 +102,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.LeafQueu
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.TestUtils;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CSQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CapacitySchedulerTestUtilities;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.conf.MutableCSConfigurationProvider;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerNode;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.NodeIDsInfo;
@@ -111,7 +112,9 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppState;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ApplicationSubmissionContextInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.AppsInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ClusterInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ClusterMetricsInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ClusterUserInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NewApplication;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodesInfo;
@@ -137,6 +140,7 @@ import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationReque
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationRequestsInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationUpdateResponseInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ReservationDeleteResponseInfo;
+import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.NodeToLabelsEntryList;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.ActivitiesInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.dao.BulkActivitiesInfo;
 import org.apache.hadoop.yarn.server.resourcemanager.webapp.RMWSConsts;
@@ -156,13 +160,16 @@ import org.apache.hadoop.yarn.util.resource.Resources;
 import org.apache.hadoop.yarn.webapp.BadRequestException;
 import org.apache.hadoop.yarn.webapp.ForbiddenException;
 import org.apache.hadoop.yarn.webapp.NotFoundException;
+import org.apache.hadoop.yarn.webapp.dao.ConfInfo;
+import org.apache.hadoop.yarn.webapp.dao.SchedConfUpdateInfo;
 import org.mockito.Mockito;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-
+import static org.apache.hadoop.yarn.server.router.webapp.BaseRouterWebServicesTest.DEDICATED_QUEUE_PATH;
+import static org.apache.hadoop.yarn.server.router.webapp.BaseRouterWebServicesTest.DEFAULT_QUEUE_PATH;
+import static org.apache.hadoop.yarn.server.router.webapp.BaseRouterWebServicesTest.ROOT_QUEUE_PATH;
 import static org.apache.hadoop.yarn.server.router.webapp.BaseRouterWebServicesTest.QUEUE_DEFAULT;
-import static org.apache.hadoop.yarn.server.router.webapp.BaseRouterWebServicesTest.QUEUE_DEFAULT_FULL;
 import static org.apache.hadoop.yarn.server.router.webapp.BaseRouterWebServicesTest.QUEUE_DEDICATED;
 import static org.apache.hadoop.yarn.server.router.webapp.BaseRouterWebServicesTest.QUEUE_DEDICATED_FULL;
 import static org.mockito.Mockito.mock;
@@ -206,11 +213,14 @@ public class MockDefaultRequestInterceptorREST
     validateRunning();
 
     ApplicationId applicationId =
-        ApplicationId.newInstance(Integer.valueOf(getSubClusterId().getId()),
+        ApplicationId.newInstance(Integer.parseInt(getSubClusterId().getId()),
             applicationCounter.incrementAndGet());
     NewApplication appId =
         new NewApplication(applicationId.toString(), new ResourceInfo());
-    return Response.status(Status.OK).entity(appId).build();
+    Response response = Mockito.mock(Response.class);
+    Mockito.when(response.readEntity(NewApplication.class)).thenReturn(appId);
+    Mockito.when(response.getStatus()).thenReturn(HttpServletResponse.SC_OK);
+    return response;
   }
 
   @Override
@@ -270,7 +280,7 @@ public class MockDefaultRequestInterceptorREST
     AppInfo appInfo = new AppInfo();
 
     appInfo.setAppId(
-        ApplicationId.newInstance(Integer.valueOf(getSubClusterId().getId()),
+        ApplicationId.newInstance(Integer.parseInt(getSubClusterId().getId()),
             applicationCounter.incrementAndGet()).toString());
     appInfo.setAMHostHttpAddress("http://i_am_the_AM:1234");
 
@@ -305,9 +315,14 @@ public class MockDefaultRequestInterceptorREST
     if (!isRunning) {
       throw new RuntimeException("RM is stopped");
     }
-    NodeInfo node = new NodeInfo();
-    node.setId(nodeId);
-    node.setLastHealthUpdate(Integer.valueOf(getSubClusterId().getId()));
+    NodeInfo node = null;
+    SubClusterId subCluster = getSubClusterId();
+    String subClusterId = subCluster.getId();
+    if (nodeId == null || nodeId.contains(subClusterId) || nodeId.contains("test")) {
+      node = new NodeInfo();
+      node.setId(nodeId);
+      node.setLastHealthUpdate(Integer.parseInt(getSubClusterId().getId()));
+    }
     return node;
   }
 
@@ -318,7 +333,7 @@ public class MockDefaultRequestInterceptorREST
     }
     NodeInfo node = new NodeInfo();
     node.setId("Node " + Integer.valueOf(getSubClusterId().getId()));
-    node.setLastHealthUpdate(Integer.valueOf(getSubClusterId().getId()));
+    node.setLastHealthUpdate(Integer.parseInt(getSubClusterId().getId()));
     NodesInfo nodes = new NodesInfo();
     nodes.add(node);
     return nodes;
@@ -340,12 +355,12 @@ public class MockDefaultRequestInterceptorREST
       throw new RuntimeException("RM is stopped");
     }
     ClusterMetricsInfo metrics = new ClusterMetricsInfo();
-    metrics.setAppsSubmitted(Integer.valueOf(getSubClusterId().getId()));
-    metrics.setAppsCompleted(Integer.valueOf(getSubClusterId().getId()));
-    metrics.setAppsPending(Integer.valueOf(getSubClusterId().getId()));
-    metrics.setAppsRunning(Integer.valueOf(getSubClusterId().getId()));
-    metrics.setAppsFailed(Integer.valueOf(getSubClusterId().getId()));
-    metrics.setAppsKilled(Integer.valueOf(getSubClusterId().getId()));
+    metrics.setAppsSubmitted(Integer.parseInt(getSubClusterId().getId()));
+    metrics.setAppsCompleted(Integer.parseInt(getSubClusterId().getId()));
+    metrics.setAppsPending(Integer.parseInt(getSubClusterId().getId()));
+    metrics.setAppsRunning(Integer.parseInt(getSubClusterId().getId()));
+    metrics.setAppsFailed(Integer.parseInt(getSubClusterId().getId()));
+    metrics.setAppsKilled(Integer.parseInt(getSubClusterId().getId()));
 
     return metrics;
   }
@@ -1000,7 +1015,7 @@ public class MockDefaultRequestInterceptorREST
     }
 
     if (resContext.getReservationId() == null) {
-      throw new BadRequestException("Update operations must specify an existing ReservaitonId");
+      throw new BadRequestException("Update operations must specify an existing ReservationId");
     }
 
     ReservationRequestInterpreter[] values = ReservationRequestInterpreter.values();
@@ -1095,12 +1110,12 @@ public class MockDefaultRequestInterceptorREST
     CapacitySchedulerConfiguration conf = new CapacitySchedulerConfiguration();
 
     // Define default queue
-    conf.setCapacity(QUEUE_DEFAULT_FULL, 20);
+    conf.setCapacity(DEFAULT_QUEUE_PATH, 20);
     // Define dedicated queues
-    conf.setQueues(CapacitySchedulerConfiguration.ROOT,
+    conf.setQueues(ROOT_QUEUE_PATH,
         new String[] {QUEUE_DEFAULT,  QUEUE_DEDICATED});
-    conf.setCapacity(QUEUE_DEDICATED_FULL, 80);
-    conf.setReservable(QUEUE_DEDICATED_FULL, true);
+    conf.setCapacity(DEDICATED_QUEUE_PATH, 80);
+    conf.setReservable(DEDICATED_QUEUE_PATH, true);
 
     conf.setClass(YarnConfiguration.RM_SCHEDULER, CapacityScheduler.class, ResourceScheduler.class);
     conf.setBoolean(YarnConfiguration.RM_RESERVATION_SYSTEM_ENABLE, true);
@@ -1236,7 +1251,19 @@ public class MockDefaultRequestInterceptorREST
     return webSvc.dumpSchedulerLogs(time, hsr);
   }
 
+  public Response replaceLabelsOnNodes(NodeToLabelsEntryList newNodeToLabels,
+      HttpServletRequest hsr) throws IOException {
+    return Response.status(Status.OK).entity(
+        "subCluster-0:Success,subCluster-1:Success,subCluster-2:Success,subCluster-3:Success,")
+        .build();
+  }
+
   @Override
+  public Response replaceLabelsOnNode(Set<String> newNodeLabelsName,
+      HttpServletRequest hsr, String nodeId) throws Exception {
+    return Response.status(Status.OK).entity("subCluster#3:Success;").build();
+  }
+
   public ActivitiesInfo getActivities(HttpServletRequest hsr, String nodeId, String groupBy) {
     if (!EnumUtils.isValidEnum(RMWSConsts.ActivitiesGroupBy.class, groupBy.toUpperCase())) {
       String errMessage = "Got invalid groupBy: " + groupBy + ", valid groupBy types: "
@@ -1306,5 +1333,84 @@ public class MockDefaultRequestInterceptorREST
     } catch (Exception e) {
       throw new RuntimeException(e);
     }
+  }
+
+  @Override
+  public Response addToClusterNodeLabels(NodeLabelsInfo newNodeLabels, HttpServletRequest hsr)
+      throws Exception {
+    List<NodeLabelInfo> nodeLabelInfoList = newNodeLabels.getNodeLabelsInfo();
+    NodeLabelInfo nodeLabelInfo = nodeLabelInfoList.get(0);
+    String nodeLabelName = nodeLabelInfo.getName();
+
+    // If nodeLabelName is ALL, we let all subclusters pass
+    if (StringUtils.equals("ALL", nodeLabelName)) {
+      return Response.status(Status.OK).build();
+    } else if (StringUtils.equals("A0", nodeLabelName)) {
+      SubClusterId subClusterId = getSubClusterId();
+      String id = subClusterId.getId();
+      if (StringUtils.contains("A0", id)) {
+        return Response.status(Status.OK).build();
+      } else {
+        return Response.status(Status.BAD_REQUEST).entity(null).build();
+      }
+    }
+    throw new YarnException("addToClusterNodeLabels Error");
+  }
+
+  @Override
+  public Response removeFromClusterNodeLabels(Set<String> oldNodeLabels, HttpServletRequest hsr)
+      throws Exception {
+    Response response = Mockito.mock(Response.class);
+    // If oldNodeLabels contains ALL, we let all subclusters pass
+    if (oldNodeLabels.contains("ALL")) {
+      return Response.status(Status.OK).build();
+    } else if (oldNodeLabels.contains("A0")) {
+      SubClusterId subClusterId = getSubClusterId();
+      String id = subClusterId.getId();
+      if (StringUtils.contains("A0", id)) {
+        Mockito.when(response.getStatus()).thenReturn(HttpServletResponse.SC_OK);
+        return response;
+      } else {
+        Mockito.when(response.getStatus()).thenReturn(HttpServletResponse.SC_BAD_REQUEST);
+        return response;
+      }
+    }
+    throw new YarnException("removeFromClusterNodeLabels Error");
+  }
+
+  @Override
+  public Response updateSchedulerConfiguration(SchedConfUpdateInfo mutationInfo,
+      HttpServletRequest req) throws AuthorizationException, InterruptedException {
+    RMContext rmContext = mockRM.getRMContext();
+    MutableCSConfigurationProvider provider = new MutableCSConfigurationProvider(rmContext);
+    try {
+      Configuration conf = new Configuration();
+      conf.set(YarnConfiguration.SCHEDULER_CONFIGURATION_STORE_CLASS,
+          YarnConfiguration.MEMORY_CONFIGURATION_STORE);
+      provider.init(conf);
+      provider.logAndApplyMutation(UserGroupInformation.getCurrentUser(), mutationInfo);
+    } catch (Exception e) {
+      throw new RuntimeException(e);
+    }
+    return Response.status(Status.OK).
+        entity("Configuration change successfully applied.").build();
+  }
+
+  @Override
+  public Response getSchedulerConfiguration(HttpServletRequest req) throws AuthorizationException {
+    return Response.status(Status.OK).entity(new ConfInfo(mockRM.getConfig()))
+        .build();
+  }
+
+  public ClusterInfo getClusterInfo() {
+    ClusterInfo clusterInfo = new ClusterInfo(mockRM);
+    return clusterInfo;
+  }
+
+  @Override
+  public ClusterUserInfo getClusterUserInfo(HttpServletRequest hsr) {
+    String remoteUser = hsr.getRemoteUser();
+    UserGroupInformation callerUGI = UserGroupInformation.createRemoteUser(remoteUser);
+    return new ClusterUserInfo(mockRM, callerUGI);
   }
 }

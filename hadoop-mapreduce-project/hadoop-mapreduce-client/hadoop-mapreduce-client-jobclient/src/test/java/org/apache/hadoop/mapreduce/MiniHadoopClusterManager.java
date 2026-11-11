@@ -31,7 +31,7 @@ import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
 import org.apache.commons.cli.GnuParser;
 import org.apache.commons.cli.HelpFormatter;
-import org.apache.commons.cli.OptionBuilder;
+import org.apache.commons.cli.Option;
 import org.apache.commons.cli.Options;
 import org.apache.commons.cli.ParseException;
 import org.apache.hadoop.fs.FileSystem;
@@ -41,9 +41,9 @@ import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.MiniMRClientCluster;
 import org.apache.hadoop.mapred.MiniMRClientClusterFactory;
 import org.apache.hadoop.mapreduce.v2.jobhistory.JHAdminConfig;
+import org.apache.hadoop.util.JsonUtils;
 import org.apache.hadoop.yarn.conf.YarnConfiguration;
 import org.apache.hadoop.yarn.server.MiniYARNCluster;
-import org.eclipse.jetty.util.ajax.JSON;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -105,18 +105,17 @@ public class MiniHadoopClusterManager {
         .addOption("jhsport", true,
             "JobHistoryServer port (default 0--we choose)")
         .addOption(
-            OptionBuilder.hasArgs().withArgName("property=value")
-                .withDescription("Options to pass into configuration object")
-                .create("D"))
+            Option.builder("D").hasArgs().argName("property=value")
+                .desc("Options to pass into configuration object")
+                .build())
         .addOption(
-            OptionBuilder.hasArg().withArgName("path").withDescription(
-                "Save configuration to this XML file.").create("writeConfig"))
+                Option.builder("writeConfig").hasArg().argName("path").desc(
+                "Save configuration to this XML file.").build())
         .addOption(
-            OptionBuilder.hasArg().withArgName("path").withDescription(
-                "Write basic information to this JSON file.").create(
-                "writeDetails"))
+                Option.builder("writeDetails").hasArg().argName("path").desc(
+                "Write basic information to this JSON file.").build())
         .addOption(
-            OptionBuilder.withDescription("Prints option help.").create("help"));
+                Option.builder("help").desc("Prints option help.").build());
     return options;
   }
 
@@ -197,7 +196,7 @@ public class MiniHadoopClusterManager {
             YarnConfiguration.RM_ADDRESS).split(":")[1]);
       }
       FileWriter fw = new FileWriter(new File(writeDetails));
-      fw.write(new JSON().toJSON(map));
+      fw.write(JsonUtils.toString(map));
       fw.close();
     }
   }

@@ -54,7 +54,6 @@ import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.event.Event;
 import org.apache.hadoop.yarn.event.EventHandler;
 import org.junit.jupiter.api.AfterAll;
-import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -62,6 +61,8 @@ import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 
 public class TestLocalContainerLauncher {
   private static final Logger LOG =
@@ -99,7 +100,7 @@ public class TestLocalContainerLauncher {
 
   @SuppressWarnings("rawtypes")
   @Test
-  @Timeout(10000)
+  @Timeout(value = 10)
   public void testKillJob() throws Exception {
     JobConf conf = new JobConf();
     AppContext context = mock(AppContext.class);
@@ -200,7 +201,7 @@ public class TestLocalContainerLauncher {
     final Path mapOut = mrOutputFiles.getOutputFileForWrite(1);
     conf.set(MRConfig.LOCAL_DIR, localDirs[1].toString());
     final Path mapOutIdx = mrOutputFiles.getOutputIndexFileForWrite(1);
-    Assertions.assertNotEquals(mapOut.getParent(), mapOutIdx.getParent(),
+    assertNotEquals(mapOut.getParent(), mapOutIdx.getParent(),
         "Paths must be different!");
 
     // make both dirs part of LOCAL_DIR

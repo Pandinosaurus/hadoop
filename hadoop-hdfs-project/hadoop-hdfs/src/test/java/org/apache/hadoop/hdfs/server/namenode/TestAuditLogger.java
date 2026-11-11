@@ -40,8 +40,9 @@ import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.GenericTestUtils.LogCapturer;
 import org.apache.hadoop.util.Lists;
 
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import org.mockito.Mockito;
 
@@ -72,11 +73,11 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_ACLS_ENABLED_KEY
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_AUDIT_LOGGERS_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_AUDIT_LOG_WITH_REMOTE_PORT_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.NNTOP_ENABLED_KEY;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.doThrow;
 
@@ -106,7 +107,7 @@ public class TestAuditLogger {
       "proto=.*?" +
       "callerContext=.*?clientPort\\:(\\d{0,9}).*?");
 
-  @Before
+  @BeforeEach
   public void setup() {
     DummyAuditLogger.initialized = false;
     DummyAuditLogger.logCount = 0;
@@ -155,8 +156,8 @@ public class TestAuditLogger {
           cluster.getNameNode().getNamesystem().getAuditLoggers();
       for (AuditLogger auditLogger : auditLoggers) {
         assertFalse(
-            "top audit logger is still hooked in after it is disabled",
-            auditLogger instanceof TopAuditLogger);
+            auditLogger instanceof TopAuditLogger,
+            "top audit logger is still hooked in after it is disabled");
       }
     } finally {
       cluster.shutdown();
@@ -258,7 +259,7 @@ public class TestAuditLogger {
     conf.setInt(HADOOP_CALLER_CONTEXT_SIGNATURE_MAX_SIZE_KEY, 40);
 
     try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build()) {
-      LogCapturer auditlog = LogCapturer.captureLogs(FSNamesystem.auditLog);
+      LogCapturer auditlog = LogCapturer.captureLogs(FSNamesystem.AUDIT_LOG);
       cluster.waitClusterUp();
       final FileSystem fs = cluster.getFileSystem();
       final long time = System.currentTimeMillis();
@@ -475,7 +476,8 @@ public class TestAuditLogger {
    * Verify Audit log entries for the successful ACL API calls and ACL commands
    * over FS Shell.
    */
-  @Test (timeout = 60000)
+  @Test
+  @Timeout(value = 60)
   public void testAuditLogForAcls() throws Exception {
     final Configuration conf = new HdfsConfiguration();
     conf.setBoolean(DFS_NAMENODE_ACLS_ENABLED_KEY, true);
@@ -568,7 +570,7 @@ public class TestAuditLogger {
     Configuration conf = new HdfsConfiguration();
     MiniDFSCluster cluster1 = new MiniDFSCluster.Builder(conf).build();
     try {
-      LogCapturer auditLog = LogCapturer.captureLogs(FSNamesystem.auditLog);
+      LogCapturer auditLog = LogCapturer.captureLogs(FSNamesystem.AUDIT_LOG);
       cluster1.waitClusterUp();
       FileSystem fs = cluster1.getFileSystem();
       long time = System.currentTimeMillis();
@@ -585,7 +587,7 @@ public class TestAuditLogger {
     conf.setBoolean(HADOOP_CALLER_CONTEXT_ENABLED_KEY, true);
     MiniDFSCluster cluster2 = new MiniDFSCluster.Builder(conf).build();
     try {
-      LogCapturer auditLog = LogCapturer.captureLogs(FSNamesystem.auditLog);
+      LogCapturer auditLog = LogCapturer.captureLogs(FSNamesystem.AUDIT_LOG);
       cluster2.waitClusterUp();
       FileSystem fs = cluster2.getFileSystem();
       long time = System.currentTimeMillis();
@@ -606,7 +608,7 @@ public class TestAuditLogger {
     conf.setInt(HADOOP_CALLER_CONTEXT_SIGNATURE_MAX_SIZE_KEY, 40);
 
     try (MiniDFSCluster cluster = new MiniDFSCluster.Builder(conf).build()) {
-      LogCapturer auditlog = LogCapturer.captureLogs(FSNamesystem.auditLog);
+      LogCapturer auditlog = LogCapturer.captureLogs(FSNamesystem.AUDIT_LOG);
       cluster.waitClusterUp();
       final FileSystem fs = cluster.getFileSystem();
       final long time = System.currentTimeMillis();

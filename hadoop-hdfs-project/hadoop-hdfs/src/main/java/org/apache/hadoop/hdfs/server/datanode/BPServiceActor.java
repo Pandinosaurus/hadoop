@@ -36,9 +36,7 @@ import java.util.SortedSet;
 import java.util.TreeSet;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.LinkedBlockingDeque;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
@@ -63,6 +61,8 @@ import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorage;
 import org.apache.hadoop.hdfs.server.protocol.DisallowedDatanodeException;
 import org.apache.hadoop.hdfs.server.protocol.HeartbeatResponse;
+import org.apache.hadoop.hdfs.server.protocol.InvalidBlockReportLeaseException;
+import org.apache.hadoop.hdfs.server.protocol.KeyUpdateCommand;
 import org.apache.hadoop.hdfs.server.protocol.NamespaceInfo;
 import org.apache.hadoop.hdfs.server.protocol.SlowDiskReports;
 import org.apache.hadoop.hdfs.server.protocol.SlowPeerReports;
@@ -72,7 +72,6 @@ import org.apache.hadoop.hdfs.server.protocol.VolumeFailureSummary;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.net.NetUtils;
-import org.apache.hadoop.thirdparty.com.google.common.util.concurrent.ThreadFactoryBuilder;
 import org.apache.hadoop.util.Preconditions;
 import org.apache.hadoop.util.Time;
 import org.apache.hadoop.util.VersionInfo;
@@ -102,8 +101,6 @@ class BPServiceActor implements Runnable {
   
   volatile long lastCacheReport = 0;
   private final Scheduler scheduler;
-  private final Object sendIBRLock;
-  private final ExecutorService ibrExecutorService;
 
   Thread bpThread;
   DatanodeProtocolClientSideTranslatorPB bpNamenode;
@@ -144,6 +141,7 @@ class BPServiceActor implements Runnable {
     this.dnConf = dn.getDnConf();
     this.ibrManager = new IncrementalBlockReportManager(
         dnConf.ibrInterval,
+        dnConf.ibrMaxPendingBlocks,
         dn.getMetrics());
     prevBlockReportId = ThreadLocalRandom.current().nextLong();
     fullBlockReportLeaseId = 0;
@@ -160,10 +158,6 @@ class BPServiceActor implements Runnable {
     }
     commandProcessingThread = new CommandProcessingThread(this);
     commandProcessingThread.start();
-    sendIBRLock = new Object();
-    ibrExecutorService = Executors.newSingleThreadExecutor(
-        new ThreadFactoryBuilder().setDaemon(true)
-            .setNameFormat("ibr-executor-%d").build());
   }
 
   public DatanodeRegistration getBpRegistration() {
@@ -266,7 +260,7 @@ class BPServiceActor implements Runnable {
     while (shouldRun()) {
       try {
         nsInfo = bpNamenode.versionRequest();
-        LOG.debug(this + " received versionRequest response: " + nsInfo);
+        LOG.debug("{} received versionRequest response: {}", this, nsInfo);
         break;
       } catch(SocketTimeoutException e) {  // namenode is busy
         LOG.warn("Problem connecting to server: " + nnAddr);
@@ -321,6 +315,7 @@ class BPServiceActor implements Runnable {
     // This also initializes our block pool in the DN if we are
     // the first NN connection for this BP.
     bpos.verifyAndSetNamespaceInfo(this, nsInfo);
+    state = nsInfo.getState();
 
     /* set thread name again to include NamespaceInfo when it's available. */
     this.bpThread.setName(formatThreadName("heartbeating", nnAddr));
@@ -396,10 +391,8 @@ class BPServiceActor implements Runnable {
     // we have a chance that we will miss the delHint information
     // or we will report an RBW replica after the BlockReport already reports
     // a FINALIZED one.
-    synchronized (sendIBRLock) {
-      ibrManager.sendIBRs(bpNamenode, bpRegistration,
-          bpos.getBlockPoolId(), getRpcMetricSuffix());
-    }
+    ibrManager.sendIBRs(bpNamenode, bpRegistration,
+        bpos.getBlockPoolId(), getRpcMetricSuffix());
 
     long brCreateStartTime = monotonicNow();
     Map<DatanodeStorage, BlockListAsLongs> perVolumeBlockLists =
@@ -462,6 +455,7 @@ class BPServiceActor implements Runnable {
       // Log the block report processing stats from Datanode perspective
       long brSendCost = monotonicNow() - brSendStartTime;
       long brCreateCost = brSendStartTime - brCreateStartTime;
+      dn.getMetrics().addBlockReportCreateCost(brCreateCost);
       dn.getMetrics().addBlockReport(brSendCost, getRpcMetricSuffix());
       final int nCmds = cmds.size();
       LOG.info((success ? "S" : "Uns") +
@@ -513,6 +507,10 @@ class BPServiceActor implements Runnable {
 
       String bpid = bpos.getBlockPoolId();
       List<Long> blockIds = dn.getFSDataset().getCacheReport(bpid);
+      // Skip cache report
+      if (blockIds.isEmpty()) {
+        return null;
+      }
       long createTime = monotonicNow();
 
       cmd = bpNamenode.cacheReport(bpRegistration, bpid, blockIds);
@@ -632,9 +630,6 @@ class BPServiceActor implements Runnable {
     if (commandProcessingThread != null) {
       commandProcessingThread.interrupt();
     }
-    if (ibrExecutorService != null && !ibrExecutorService.isShutdown()) {
-      ibrExecutorService.shutdownNow();
-    }
   }
   
   //This must be called only by blockPoolManager
@@ -649,18 +644,13 @@ class BPServiceActor implements Runnable {
     } catch (InterruptedException ie) { }
   }
   
-  // Cleanup method to be called by current thread before exiting.
-  // Any Thread / ExecutorService started by BPServiceActor can be shutdown
-  // here.
+  //Cleanup method to be called by current thread before exiting.
   private synchronized void cleanUp() {
     
     shouldServiceRun = false;
     IOUtils.cleanupWithLogger(null, bpNamenode);
     IOUtils.cleanupWithLogger(null, lifelineSender);
     bpos.shutdownActor(this);
-    if (!ibrExecutorService.isShutdown()) {
-      ibrExecutorService.shutdownNow();
-    }
   }
 
   private void handleRollingUpgradeStatus(HeartbeatResponse resp) throws IOException {
@@ -752,9 +742,33 @@ class BPServiceActor implements Runnable {
             if (state == HAServiceState.ACTIVE) {
               handleRollingUpgradeStatus(resp);
             }
-            commandProcessingThread.enqueue(resp.getCommands());
+            DatanodeCommand[] cmds = resp.getCommands();
+            if (cmds != null && cmds.length != 0) {
+              int length = cmds.length;
+              for (int i = length - 1; i >= 0; i--) {
+                if (cmds[i] instanceof KeyUpdateCommand) {
+                  commandProcessingThread.enqueueFirst(cmds[i]);
+                  cmds[i] = null;
+                  break;
+                }
+              }
+              commandProcessingThread.enqueue(cmds);
+            }
             isSlownode = resp.getIsSlownode();
           }
+        }
+        if (!dn.areIBRDisabledForTests() &&
+            (ibrManager.sendImmediately()|| sendHeartbeat)) {
+          ibrManager.sendIBRs(bpNamenode, bpRegistration,
+              bpos.getBlockPoolId(), getRpcMetricSuffix());
+        }
+
+        // Guard against unbounded IBR growth when this NameNode is
+        // unreachable: if the queue was cleared to prevent OOM, schedule a
+        // full block report so the NameNode gets a consistent view once it
+        // becomes reachable again.
+        if (ibrManager.clearIBRsIfNeeded()) {
+          scheduler.forceFullBlockReportNow();
         }
 
         List<DatanodeCommand> cmds = null;
@@ -790,6 +804,9 @@ class BPServiceActor implements Runnable {
           LOG.warn(this + " is shutting down", re);
           shouldServiceRun = false;
           return;
+        }
+        if (InvalidBlockReportLeaseException.class.getName().equals(reClass)) {
+          fullBlockReportLeaseId = 0;
         }
         LOG.warn("RemoteException in offerService", re);
         sleepAfterException();
@@ -919,10 +936,6 @@ class BPServiceActor implements Runnable {
         initialRegistrationComplete.countDown();
       }
 
-      // IBR tasks to be handled separately from offerService() in order to
-      // improve performance of offerService(), which can now focus only on
-      // FBR and heartbeat.
-      ibrExecutorService.submit(new IBRTaskHandler());
       while (shouldRun()) {
         try {
           offerService();
@@ -1153,34 +1166,6 @@ class BPServiceActor implements Runnable {
                                     numFailedVolumes,
                                     volumeFailureSummary);
     }
-  }
-
-  class IBRTaskHandler implements Runnable {
-
-    @Override
-    public void run() {
-      LOG.info("Starting IBR Task Handler.");
-      while (shouldRun()) {
-        try {
-          final long startTime = scheduler.monotonicNow();
-          final boolean sendHeartbeat = scheduler.isHeartbeatDue(startTime);
-          if (!dn.areIBRDisabledForTests() &&
-              (ibrManager.sendImmediately() || sendHeartbeat)) {
-            synchronized (sendIBRLock) {
-              ibrManager.sendIBRs(bpNamenode, bpRegistration,
-                  bpos.getBlockPoolId(), getRpcMetricSuffix());
-            }
-          }
-          // There is no work to do; sleep until heartbeat timer elapses,
-          // or work arrives, and then iterate again.
-          ibrManager.waitTillNextIBR(scheduler.getHeartbeatWaitTime());
-        } catch (Throwable t) {
-          LOG.error("Exception in IBRTaskHandler.", t);
-          sleepAndLogInterrupts(5000, "offering IBR service");
-        }
-      }
-    }
-
   }
 
   /**
@@ -1427,7 +1412,7 @@ class BPServiceActor implements Runnable {
     CommandProcessingThread(BPServiceActor actor) {
       super("Command processor");
       this.actor = actor;
-      this.queue = new LinkedBlockingQueue<>();
+      this.queue = new LinkedBlockingDeque<>();
       setDaemon(true);
     }
 
@@ -1514,6 +1499,22 @@ class BPServiceActor implements Runnable {
       dn.getMetrics().incrActorCmdQueueLength(1);
     }
 
+    /**
+     * Enqueue DatanodeCommand to the head of queue.
+     * @param cmd
+     * @throws InterruptedException
+     */
+    void enqueueFirst(DatanodeCommand cmd) throws InterruptedException {
+      if (cmd == null) {
+        return;
+      }
+      ((LinkedBlockingDeque<Runnable>) queue).putFirst(
+          () -> processCommand(new DatanodeCommand[]{cmd}));
+
+      LOG.info("Enqueue command: {} to the head of queue", cmd);
+      dn.getMetrics().incrActorCmdQueueLength(1);
+    }
+
     void enqueue(List<DatanodeCommand> cmds) throws InterruptedException {
       if (cmds == null) {
         return;
@@ -1524,8 +1525,10 @@ class BPServiceActor implements Runnable {
     }
 
     void enqueue(DatanodeCommand[] cmds) throws InterruptedException {
-      queue.put(() -> processCommand(cmds));
-      dn.getMetrics().incrActorCmdQueueLength(1);
+      if (cmds.length != 0) {
+        queue.put(() -> processCommand(cmds));
+        dn.getMetrics().incrActorCmdQueueLength(1);
+      }
     }
   }
 

@@ -19,6 +19,10 @@
 package org.apache.hadoop.yarn.client.api.impl;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.anyMap;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -31,6 +35,7 @@ import org.apache.hadoop.yarn.api.records.ContainerId;
 import org.apache.hadoop.yarn.api.records.ContainerReport;
 import org.apache.hadoop.yarn.api.records.ContainerState;
 import org.apache.hadoop.yarn.api.records.Priority;
+import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineEntity;
 import org.apache.hadoop.yarn.api.records.timelineservice.TimelineEvent;
@@ -40,11 +45,12 @@ import org.apache.hadoop.yarn.exceptions.YarnException;
 import org.apache.hadoop.yarn.server.metrics.AppAttemptMetricsConstants;
 import org.apache.hadoop.yarn.server.metrics.ApplicationMetricsConstants;
 import org.apache.hadoop.yarn.server.metrics.ContainerMetricsConstants;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.apache.hadoop.yarn.util.resource.ResourceUtils;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 
 import java.io.IOException;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
@@ -57,7 +63,7 @@ public class TestAHSv2ClientImpl {
 
   private AHSv2ClientImpl client;
   private TimelineReaderClient spyTimelineReaderClient;
-  @Before
+  @BeforeEach
   public void setup() {
     Configuration conf = new YarnConfiguration();
     conf.setBoolean(YarnConfiguration.TIMELINE_SERVICE_ENABLED, true);
@@ -108,6 +114,41 @@ public class TestAHSv2ClientImpl {
   }
 
   @Test
+  public void testCustomContainerResources() throws Exception {
+    Configuration conf = new YarnConfiguration();
+    conf.set(YarnConfiguration.RESOURCE_TYPES, "yarn.io/gpu");
+    ResourceUtils.resetResourceTypes(conf);
+    try {
+      ApplicationId appId = ApplicationId.newInstance(0, 1);
+      ApplicationAttemptId attemptId = ApplicationAttemptId.newInstance(appId, 1);
+      ContainerId containerId = ContainerId.newContainerId(attemptId, 1);
+      TimelineEntity entity = createContainerEntity(containerId);
+      Map<String, Object> allocation = new HashMap<>();
+      allocation.put("value", 2);
+      allocation.put("units", "");
+      entity.addInfo(ContainerMetricsConstants.ALLOCATED_RESOURCES_INFO,
+          Collections.singletonMap("yarn.io/gpu", allocation));
+      when(spyTimelineReaderClient.getContainerEntity(containerId, "ALL", null))
+          .thenReturn(entity);
+      when(spyTimelineReaderClient.getApplicationEntity(appId, "ALL", null))
+          .thenReturn(createApplicationTimelineEntity(appId, true, false));
+      when(spyTimelineReaderClient.getContainerEntities(
+          eq(appId), eq("ALL"), anyMap(), eq(0L), isNull()))
+          .thenReturn(Collections.singletonList(entity));
+      Resource allocated = client.getContainerReport(containerId)
+          .getAllocatedResource();
+      assertThat(allocated.getResourceValue("yarn.io/gpu")).isEqualTo(2);
+      assertThat(allocated.getMemorySize()).isEqualTo(1024);
+      assertThat(allocated.getVirtualCores()).isEqualTo(8);
+      assertThat(client.getContainers(attemptId)).hasSize(1);
+      assertThat(client.getContainers(attemptId).get(0).getAllocatedResource())
+          .isEqualTo(allocated);
+    } finally {
+      ResourceUtils.resetResourceTypes(new YarnConfiguration());
+    }
+  }
+
+  @Test
   public void testGetAppReport() throws IOException, YarnException {
     final ApplicationId appId = ApplicationId.newInstance(0, 1);
     when(spyTimelineReaderClient.getApplicationEntity(appId, "ALL", null))
@@ -116,7 +157,7 @@ public class TestAHSv2ClientImpl {
     assertThat(report.getApplicationId()).isEqualTo(appId);
     assertThat(report.getAppNodeLabelExpression()).
         isEqualTo("test_node_label");
-    Assert.assertTrue(report.getApplicationTags().contains("Test_APP_TAGS_1"));
+    assertTrue(report.getApplicationTags().contains("Test_APP_TAGS_1"));
     assertThat(report.getYarnApplicationState()).
         isEqualTo(YarnApplicationState.FINISHED);
   }

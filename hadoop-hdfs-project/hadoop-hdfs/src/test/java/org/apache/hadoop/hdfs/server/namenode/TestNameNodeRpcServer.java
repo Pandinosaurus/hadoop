@@ -26,12 +26,16 @@ package org.apache.hadoop.hdfs.server.namenode;
 
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_IP_PROXY_USERS;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_NAMENODE_RPC_BIND_HOST_KEY;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import java.io.IOException;
+import java.net.Inet6Address;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.nio.charset.StandardCharsets;
 import java.security.PrivilegedExceptionAction;
 import java.util.EnumSet;
@@ -43,6 +47,7 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.AddBlockFlag;
 import org.apache.hadoop.hdfs.DFSTestUtil;
+import org.apache.hadoop.hdfs.DFSUtilClient;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
@@ -52,10 +57,12 @@ import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.hdfs.qjournal.MiniQJMHACluster;
 import org.apache.hadoop.ipc.CallerContext;
 import org.apache.hadoop.ipc.ObserverRetryOnActiveException;
+import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.test.GenericTestUtils;
 import org.apache.hadoop.test.LambdaTestUtils;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
 public class TestNameNodeRpcServer {
@@ -73,8 +80,8 @@ public class TestNameNodeRpcServer {
     try {
       cluster = new MiniDFSCluster.Builder(conf).build();
       cluster.waitActive();
-      assertEquals("0.0.0.0", ((NameNodeRpcServer)cluster.getNameNodeRpc())
-          .getClientRpcServer().getListenerAddress().getHostName());
+      assertEquals("0.0.0.0", ((NameNodeRpcServer) cluster.getNameNodeRpc()).getClientRpcServer()
+          .getListenerAddress().getHostName());
     } finally {
       if (cluster != null) {
         cluster.shutdown();
@@ -82,6 +89,51 @@ public class TestNameNodeRpcServer {
       // Reset the config
       conf.unset(DFS_NAMENODE_RPC_BIND_HOST_KEY);
     }
+  }
+
+  @Test
+  public void testAdvertisedAddress() throws IOException {
+    for (boolean useIp : new boolean[] {true, false}) {
+      SecurityUtil.setTokenServiceUseIp(useIp);
+      try {
+        // The reverse name of a literal is advertised only if it resolves back to it.
+        for (String literal : new String[] {"127.0.0.1", "[::1]"}) {
+          InetSocketAddress configured = NetUtils.createSocketAddr(literal + ":0");
+          InetSocketAddress advertised =
+              NameNodeRpcServer.getAdvertisedAddress(configured, 8020);
+          assertEquals(8020, advertised.getPort());
+          assertEquals(configured.getAddress(), advertised.getAddress());
+          assertEquals(configured.getAddress(),
+              InetAddress.getByName(advertised.getHostName()));
+        }
+        // The expected name depends on the platform: localhost, localhost.localdomain, or the
+        // literal when the name resolves to another address first (preferIPv6Addresses=true).
+        InetAddress loopback = InetAddress.getByName("127.0.0.1");
+        String reverse = loopback.getCanonicalHostName();
+        String expected = "127.0.0.1";
+        try {
+          if (SecurityUtil.getByName(reverse).equals(loopback)) {
+            expected = reverse;
+          }
+        } catch (UnknownHostException e) {
+          // the literal is kept
+        }
+        assertEquals(expected, NameNodeRpcServer.getAdvertisedAddress(
+            NetUtils.createSocketAddr("127.0.0.1:0"), 8020).getHostName());
+        assertEquals(InetSocketAddress.createUnresolved("nn.invalid", 8020),
+            NameNodeRpcServer.getAdvertisedAddress(
+                InetSocketAddress.createUnresolved("nn.invalid", 0), 8020));
+      } finally {
+        SecurityUtil.setTokenServiceUseIp(true);
+      }
+    }
+    // A scoped literal is kept, so that the scope survives fs.defaultFS. Only checked with
+    // use_ip=true, since the use_ip=false resolver already drops the scope of a literal.
+    InetSocketAddress scoped = NameNodeRpcServer.getAdvertisedAddress(
+        NetUtils.createSocketAddr("[fe80::1%1]:0"), 8020);
+    InetSocketAddress resolved = DFSUtilClient.getNNAddress(DFSUtilClient.getNNUri(scoped));
+    assertEquals(scoped, resolved);
+    assertEquals(1, ((Inet6Address) resolved.getAddress()).getScopeId());
   }
 
   /**
@@ -105,7 +157,7 @@ public class TestNameNodeRpcServer {
   static final int ITERATIONS_TO_USE = 20;
 
   @Test
-  @Timeout(30000)
+  @Timeout(30)
   public void testNamenodeRpcClientIpProxyWithFailBack() throws Exception {
     // Make 3 nodes & racks so that we have a decent shot of detecting when
     // our change overrides the random choice of datanode.
@@ -165,7 +217,7 @@ public class TestNameNodeRpcServer {
   }
 
   @Test
-  @Timeout(30000)
+  @Timeout(30)
   public void testObserverHandleAddBlock() throws Exception {
     String baseDir = GenericTestUtils.getRandomizedTempPath();
     Configuration conf = new HdfsConfiguration();
@@ -240,7 +292,7 @@ public class TestNameNodeRpcServer {
           // found some other host, so things are good
           break;
         } else if (trial == ITERATIONS_TO_USE - 1) {
-          assertNotEquals("Failed to get non-node1", hosts[0], host);
+          assertNotEquals(hosts[0], host, "Failed to get non-node1");
         }
       }
       // Run as fake joe to authorize the test
@@ -252,7 +304,7 @@ public class TestNameNodeRpcServer {
       // As joe, we should get all node1.
       for (int trial = 0; trial < ITERATIONS_TO_USE; ++trial) {
         String host = getPreferredLocation(joeFs, fooName);
-        assertEquals("Trial " + trial + " failed", hosts[0], host);
+        assertEquals(hosts[0], host, "Trial " + trial + " failed");
       }
     } finally {
       CallerContext.setCurrent(original);

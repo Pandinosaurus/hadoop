@@ -30,6 +30,7 @@ import java.net.SocketException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.Enumeration;
@@ -37,6 +38,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import javax.servlet.ServletContext;
 import javax.servlet.ServletException;
 import javax.servlet.http.Cookie;
 import javax.servlet.http.HttpServlet;
@@ -95,15 +97,13 @@ public class WebAppProxyServlet extends HttpServlet {
   public static final String PROXY_USER_COOKIE_NAME = "proxy-user";
 
   private transient List<TrackingUriPlugin> trackingUriPlugins;
-  private final String rmAppPageUrlBase;
-  private final String ahsAppPageUrlBase;
   private final String failurePageUrlBase;
   private transient YarnConfiguration conf;
 
   /**
    * HTTP methods.
    */
-  private enum HTTP { GET, POST, HEAD, PUT, DELETE };
+  private enum HTTP { GET, POST, HEAD, PUT, DELETE }
 
   /**
    * Empty Hamlet class.
@@ -134,16 +134,21 @@ public class WebAppProxyServlet extends HttpServlet {
     this.trackingUriPlugins =
         conf.getInstances(YarnConfiguration.YARN_TRACKING_URL_GENERATOR,
             TrackingUriPlugin.class);
-    this.rmAppPageUrlBase =
-        StringHelper.pjoin(WebAppUtils.getResolvedRMWebAppURLWithScheme(conf),
-          "cluster", "app");
     this.failurePageUrlBase =
         StringHelper.pjoin(WebAppUtils.getResolvedRMWebAppURLWithScheme(conf),
           "cluster", "failure");
-    this.ahsAppPageUrlBase =
-        StringHelper.pjoin(WebAppUtils.getHttpSchemePrefix(conf)
-          + WebAppUtils.getAHSWebAppURLWithoutScheme(conf),
-          "applicationhistory", "app");
+  }
+
+  private String getRmAppPageUrlBase(ApplicationId id) throws YarnException, IOException {
+    ServletContext context = getServletContext();
+    AppReportFetcher af = (AppReportFetcher) context.getAttribute(WebAppProxy.FETCHER_ATTRIBUTE);
+    return af.getRmAppPageUrlBase(id);
+  }
+
+  private String getAhsAppPageUrlBase() {
+    ServletContext context = getServletContext();
+    AppReportFetcher af = (AppReportFetcher) context.getAttribute(WebAppProxy.FETCHER_ATTRIBUTE);
+    return af.getAhsAppPageUrlBase();
   }
 
   /**
@@ -283,7 +288,7 @@ public class WebAppProxyServlet extends HttpServlet {
       StringBuilder sb = new StringBuilder();
       BufferedReader reader =
           new BufferedReader(
-              new InputStreamReader(req.getInputStream(), "UTF-8"));
+              new InputStreamReader(req.getInputStream(), StandardCharsets.UTF_8));
       String line;
       while ((line = reader.readLine()) != null) {
         sb.append(line);
@@ -524,6 +529,38 @@ public class WebAppProxyServlet extends HttpServlet {
         default:
           // fall out of the switch
       }
+
+      /*
+       * If the application registered its tracking URL with the configured
+       * redirect flag, the proxy should not attempt
+       * to fetch the resource itself. Instead, it performs an HTTP redirect
+       * to the tracking URL.
+       *
+       * This is required for deployments where the tracking URL is served
+       * behind an external reverse proxy (for example Apache Knox) that is
+       * responsible for routing requests to multiple backend services
+       * such as Spark History Server instances in an HA setup.
+       *
+       * In such environments the YARN WebAppProxy cannot correctly proxy the
+       * request because the reverse proxy expects the request to originate
+       * directly from the user's browser and may require authentication
+       * context (e.g. a JWT) that the YARN proxy must not forward for
+       * security reasons.
+       *
+       * By redirecting the user instead of proxying the request, the browser
+       * sends a new request to the external reverse proxy which can then
+       * handle authentication and route the request to the appropriate
+       * backend service.
+       */
+      String toFetchQuery = toFetch.getQuery();
+      if (toFetchQuery != null) {
+        String redirectFlagName = conf.get(YarnConfiguration.PROXY_REDIRECT_FLAG, "");
+        if (!redirectFlagName.isBlank() && toFetchQuery.contains(redirectFlagName + "=true")) {
+          ProxyUtils.sendRedirect(req, resp, toFetch.toString());
+          return;
+        }
+      }
+
       Cookie c = null;
       if (userWasWarned && userApproved) {
         c = makeCheckCookie(id, true);
@@ -578,7 +615,7 @@ public class WebAppProxyServlet extends HttpServlet {
    */
   private URI getTrackingUri(HttpServletRequest req, HttpServletResponse resp,
       ApplicationId id, String originalUri, AppReportSource appReportSource)
-      throws IOException, URISyntaxException {
+      throws IOException, URISyntaxException, YarnException {
     URI trackingUri = null;
 
     if ((originalUri == null) ||
@@ -589,15 +626,15 @@ public class WebAppProxyServlet extends HttpServlet {
         // and Application Report was fetched from RM
         LOG.debug("Original tracking url is '{}'. Redirecting to RM app page",
             originalUri == null ? "NULL" : originalUri);
-        ProxyUtils.sendRedirect(req, resp,
-            StringHelper.pjoin(rmAppPageUrlBase, id.toString()));
+        ProxyUtils.sendRedirect(req, resp, StringHelper.pjoin(getRmAppPageUrlBase(id),
+            id.toString()));
       } else if (appReportSource == AppReportSource.AHS) {
         // fallback to Application History Server app page if the application
         // report was fetched from AHS
         LOG.debug("Original tracking url is '{}'. Redirecting to AHS app page",
             originalUri == null ? "NULL" : originalUri);
-        ProxyUtils.sendRedirect(req, resp,
-            StringHelper.pjoin(ahsAppPageUrlBase, id.toString()));
+        ProxyUtils.sendRedirect(req, resp, StringHelper.pjoin(getAhsAppPageUrlBase(),
+            id.toString()));
       }
     } else if (ProxyUriUtils.getSchemeFromUrl(originalUri).isEmpty()) {
       trackingUri =

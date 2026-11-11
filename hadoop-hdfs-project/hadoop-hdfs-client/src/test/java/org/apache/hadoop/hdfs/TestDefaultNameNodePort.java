@@ -20,12 +20,12 @@ package org.apache.hadoop.hdfs;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
 
 import java.net.InetSocketAddress;
 import java.net.URI;
 
-import static org.junit.Assert.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 
 /** Test NameNode port defaulting code. */
 public class TestDefaultNameNodePort {
@@ -63,6 +63,18 @@ public class TestDefaultNameNodePort {
         DFSUtilClient.getNNUri(new InetSocketAddress("foo", 555)));
     assertEquals(URI.create("hdfs://foo"),
         DFSUtilClient.getNNUri(new InetSocketAddress("foo",
+            HdfsClientConfigKeys.DFS_NAMENODE_RPC_PORT_DEFAULT)));
+  }
+
+  @Test
+  public void testGetUriIPv6() {
+    // getHostName() returns an unbracketed literal when there is no PTR record.
+    String host = "2001:db8:0:0:0:0:0:10";
+    URI uri = DFSUtilClient.getNNUri(InetSocketAddress.createUnresolved(host, 555));
+    assertEquals(URI.create("hdfs://[" + host + "]:555"), uri);
+    assertEquals("[" + host + "]", uri.getHost());
+    assertEquals(URI.create("hdfs://[" + host + "]"),
+        DFSUtilClient.getNNUri(InetSocketAddress.createUnresolved(host,
             HdfsClientConfigKeys.DFS_NAMENODE_RPC_PORT_DEFAULT)));
   }
 }

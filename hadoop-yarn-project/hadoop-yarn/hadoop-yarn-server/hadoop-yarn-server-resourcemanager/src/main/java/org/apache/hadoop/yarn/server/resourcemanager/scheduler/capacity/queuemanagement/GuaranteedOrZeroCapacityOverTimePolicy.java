@@ -20,6 +20,7 @@ package org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity
 
 import org.apache.hadoop.classification.VisibleForTesting;
 import org.apache.hadoop.yarn.api.records.Resource;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.AbstractParentQueue;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.SchedulerDynamicEditException;
@@ -31,8 +32,8 @@ import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.AutoCrea
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.AutoCreatedQueueManagementPolicy;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.CSQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.ManagedParentQueue;
-import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.ParentQueue;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.QueueCapacities;
+import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.QueueLabelChecks;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.capacity.QueueManagementChange;
 import org.apache.hadoop.yarn.server.resourcemanager.scheduler.common.fica.FiCaSchedulerApp;
 import org.apache.hadoop.yarn.util.Clock;
@@ -51,6 +52,8 @@ import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
+import static org.apache.hadoop.yarn.server.resourcemanager.scheduler
+    .capacity.AbstractCSQueue.CapacityConfigType.ABSOLUTE_RESOURCE;
 import static org.apache.hadoop.yarn.server.resourcemanager.scheduler
     .capacity.CSQueueUtils.EPSILON;
 
@@ -251,7 +254,7 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
   }
 
   @Override
-  public void init(final ParentQueue parentQueue) throws IOException {
+  public void init(final AbstractParentQueue parentQueue) throws IOException {
     ReentrantReadWriteLock lock = new ReentrantReadWriteLock();
     readLock = lock.readLock();
     writeLock = lock.writeLock();
@@ -277,17 +280,12 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
     leafQueueTemplateCapacities = leafQueueTemplate.getQueueCapacities();
 
     Set<String> parentQueueLabels = parentQueue.getNodeLabelsForQueue();
-    for (String nodeLabel : leafQueueTemplateCapacities
-        .getExistingNodeLabels()) {
-
-      if (!parentQueueLabels.contains(nodeLabel)) {
-        LOG.error("Invalid node label " + nodeLabel
-            + " on configured leaf template on parent" + " queue " + parentQueue
-            .getQueuePath());
-        throw new IOException("Invalid node label " + nodeLabel
-            + " on configured leaf template on parent" + " queue " + parentQueue
-            .getQueuePath());
-      }
+    String templateLabelsError = QueueLabelChecks.checkLeafQueueTemplateLabels(
+        parentQueue.getQueuePath(), leafQueueTemplateCapacities.getExistingNodeLabels(),
+        parentQueueLabels);
+    if (templateLabelsError != null) {
+      LOG.error(templateLabelsError);
+      throw new IOException(templateLabelsError);
     }
 
     leafQueueTemplateNodeLabels =
@@ -304,11 +302,20 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
    *
    * @return List of Queue Management change suggestions which could potentially
    * be committed/rejected by the scheduler due to validation failures
-   * @throws SchedulerDynamicEditException
+   * @throws SchedulerDynamicEditException when compute queueManagement changes fails.
    */
   @Override
   public List<QueueManagementChange> computeQueueManagementChanges()
       throws SchedulerDynamicEditException {
+
+    // Recompute the leaf queue template capacities from the current cluster
+    // resource for ABSOLUTE_RESOURCE mode. The template fraction is otherwise
+    // computed only at reinitialize; if a leaf queue was auto-created
+    // while the cluster resource was zero  during RM recovery before any
+    // NodeManager registered the fraction stays 0 and the queue never regains
+    // capacity. This refresh lets the template pick up the real capacity once
+    // NodeManagers register. No operation unless it is ABSOLUTE_RESOURCE.
+    managedParentQueue.updateTemplateCapacitiesForAbsoluteResource();
 
     // Update template absolute capacities as the capacities could have changed
     // in weight mode
@@ -415,7 +422,8 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
     try {
       CSQueueUtils.updateAbsoluteCapacitiesByNodeLabels(
           policy.leafQueueTemplate.getQueueCapacities(),
-          parentQueueCapacities, policy.leafQueueTemplateNodeLabels);
+          parentQueueCapacities, policy.leafQueueTemplateNodeLabels,
+          managedParentQueue.getQueueContext().getConfiguration().isLegacyQueueMode());
       policy.leafQueueTemplateCapacities =
           policy.leafQueueTemplate.getQueueCapacities();
     } finally {
@@ -533,7 +541,7 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
    * queues
    */
   private Map<String, QueueCapacities> deactivateLeafQueuesIfInActive(
-      ParentQueue parentQueue, String nodeLabel,
+      AbstractParentQueue parentQueue, String nodeLabel,
       LeafQueueEntitlements leafQueueEntitlements)
       throws SchedulerDynamicEditException {
     Map<String, QueueCapacities> deactivatedQueues = new HashMap<>();
@@ -658,7 +666,7 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
   }
 
   @Override
-  public void reinitialize(final ParentQueue parentQueue) throws IOException {
+  public void reinitialize(final AbstractParentQueue parentQueue) throws IOException {
     if (!(parentQueue instanceof ManagedParentQueue)) {
       throw new IllegalStateException(
           "Expected instance of type " + ManagedParentQueue.class + " found  "
@@ -715,8 +723,18 @@ public class GuaranteedOrZeroCapacityOverTimePolicy
             getAbsoluteCapacity(nodeLabel) - parentQueueState.
             getAbsoluteActivatedChildQueueCapacity(nodeLabel) + EPSILON;
 
-        if (availableCapacity >= leafQueueTemplateCapacities
-            .getAbsoluteCapacity(nodeLabel)) {
+        // In ABSOLUTE_RESOURCE mode, don't activate a leaf queue while the cluster
+        // resource is 0 during RM recovery before NodeManagers register.
+        // Otherwise, it gets initialized with zero capacity and never updates.
+        // Create it deactivated instead, and let the monitor activate it once
+        // cluster resources are available. Percentage and weight modes are unaffected.
+        boolean deferActivationUntilClusterResource =
+            managedParentQueue.getCapacityConfigType() == ABSOLUTE_RESOURCE
+                && managedParentQueue.getQueueContext().getClusterResource()
+                    .getMemorySize() <= 0;
+
+        if (!deferActivationUntilClusterResource && availableCapacity
+            >= leafQueueTemplateCapacities.getAbsoluteCapacity(nodeLabel)) {
           updateCapacityFromTemplate(capacities, nodeLabel);
           activate(leafQueue, nodeLabel);
         } else{

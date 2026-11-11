@@ -21,21 +21,24 @@ package org.apache.hadoop.ipc;
 import static java.lang.Thread.sleep;
 
 import java.util.Map;
-import org.eclipse.jetty.util.ajax.JSON;
-import org.junit.Test;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.apache.hadoop.ipc.DecayRpcScheduler.IPC_DECAYSCHEDULER_THRESHOLDS_KEY;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertNotEquals;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import com.fasterxml.jackson.core.type.TypeReference;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.metrics2.lib.DefaultMetricsSystem;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.util.JsonUtils;
 
 import javax.management.MBeanServer;
 import javax.management.ObjectName;
@@ -80,14 +83,18 @@ public class TestDecayRpcScheduler {
 
   private DecayRpcScheduler scheduler;
 
-  @Test(expected=IllegalArgumentException.class)
+  @Test
   public void testNegativeScheduler() {
-    scheduler = new DecayRpcScheduler(-1, "", new Configuration());
+    assertThrows(IllegalArgumentException.class, () -> {
+      scheduler = new DecayRpcScheduler(-1, "", new Configuration());
+    });
   }
 
-  @Test(expected=IllegalArgumentException.class)
+  @Test
   public void testZeroScheduler() {
-    scheduler = new DecayRpcScheduler(0, "", new Configuration());
+    assertThrows(IllegalArgumentException.class, () -> {
+      scheduler = new DecayRpcScheduler(0, "", new Configuration());
+    });
   }
 
   @Test
@@ -292,17 +299,18 @@ public class TestDecayRpcScheduler {
         "Hadoop:service="+ namespace + ",name=DecayRpcScheduler");
 
     String cvs1 = (String) mbs.getAttribute(mxbeanName, "CallVolumeSummary");
-    assertTrue("Get expected JMX of CallVolumeSummary before decay",
-        cvs1.equals("{\"A\":6,\"B\":2,\"C\":2}"));
+    assertTrue(cvs1.equals("{\"A\":6,\"B\":2,\"C\":2}"),
+        "Get expected JMX of CallVolumeSummary before decay");
 
     scheduler.forceDecay();
 
     String cvs2 = (String) mbs.getAttribute(mxbeanName, "CallVolumeSummary");
-    assertTrue("Get expected JMX for CallVolumeSummary after decay",
-        cvs2.equals("{\"A\":3,\"B\":1,\"C\":1}"));
+    assertTrue(cvs2.equals("{\"A\":3,\"B\":1,\"C\":1}"),
+        "Get expected JMX for CallVolumeSummary after decay");
   }
 
-  @Test(timeout=2000)
+  @Test
+  @Timeout(value = 2)
   @SuppressWarnings("deprecation")
   public void testPeriodic() throws InterruptedException {
     Configuration conf = new Configuration();
@@ -325,7 +333,8 @@ public class TestDecayRpcScheduler {
     }
   }
 
-  @Test(timeout=60000)
+  @Test
+  @Timeout(value = 60)
   public void testNPEatInitialization() throws InterruptedException {
     // redirect the LOG to and check if there is NPE message while initializing
     // the DecayRpcScheduler
@@ -480,10 +489,11 @@ public class TestDecayRpcScheduler {
     scheduler.forceDecay();
     // Check priorities on cache
     String summary = scheduler.getSchedulingDecisionSummary();
-    Map<String, Object> summaryMap = (Map<String, Object>) JSON.parse(summary);
-    assertNotEquals(0L, summaryMap.get("user1"));
-    assertEquals(0L, summaryMap.get("service1"));
-    assertEquals(0L, summaryMap.get("service2"));
+    Map<String, Integer> summaryMap = JsonUtils.parse(summary,
+        new TypeReference<Map<String, Integer>>() {});
+    assertNotEquals(0, summaryMap.get("user1"));
+    assertEquals(0, summaryMap.get("service1"));
+    assertEquals(0, summaryMap.get("service2"));
   }
 
   /**

@@ -22,7 +22,11 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.azurebfs.contract.ABFSContractTestBinding;
 import org.apache.hadoop.fs.azurebfs.contract.AbfsFileSystemContract;
 import org.apache.hadoop.fs.contract.AbstractFSContract;
+import org.apache.hadoop.mapreduce.lib.output.committer.manifest.ManifestCommitterTestSupport;
 import org.apache.hadoop.mapreduce.lib.output.committer.manifest.TestLoadManifestsStage;
+import org.junit.jupiter.api.BeforeEach;
+
+import static org.apache.hadoop.fs.azurebfs.utils.AbfsTestUtils.SCALE_TEST_TIMEOUT_MILLIS;
 
 /**
  * ABFS storage test of saving and loading a large number
@@ -36,6 +40,7 @@ public class ITestAbfsLoadManifestsStage extends TestLoadManifestsStage {
     binding = new ABFSContractTestBinding();
   }
 
+  @BeforeEach
   @Override
   public void setup() throws Exception {
     binding.setup();
@@ -52,4 +57,16 @@ public class ITestAbfsLoadManifestsStage extends TestLoadManifestsStage {
     return new AbfsFileSystemContract(conf, binding.isSecureMode());
   }
 
+  @Override
+  protected int getTestTimeoutMillis() {
+    return SCALE_TEST_TIMEOUT_MILLIS;
+  }
+
+  /**
+   * @return a smaller number of TAs than the base test suite does.
+   */
+  @Override
+  protected int numberOfTaskAttempts() {
+    return ManifestCommitterTestSupport.NUMBER_OF_TASK_ATTEMPTS_SMALL;
+  }
 }

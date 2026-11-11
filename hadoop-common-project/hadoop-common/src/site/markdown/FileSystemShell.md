@@ -37,9 +37,15 @@ See the [Commands Manual](./CommandsManual.html) for generic shell options.
 appendToFile
 ------------
 
-Usage: `hadoop fs -appendToFile <localsrc> ... <dst> `
+Usage: `hadoop fs -appendToFile [-n] <localsrc> ... <dst>`
 
 Append single src, or multiple srcs from local file system to the destination file system. Also reads input from stdin and appends to destination file system.
+
+Options
+
+* The `-n` option represents that use NEW_BLOCK create flag to append file.
+
+Example:
 
 * `hadoop fs -appendToFile localfile /user/hadoop/hadoopfile`
 * `hadoop fs -appendToFile localfile1 localfile2 /user/hadoop/hadoopfile`
@@ -137,13 +143,13 @@ Usage: `hadoop fs -count [-q] [-h] [-v] [-x] [-t [<storage type>]] [-u] [-e] [-s
 
 Count the number of directories, files and bytes under the paths that match the specified file pattern. Get the quota and the usage. The output columns with -count are: DIR\_COUNT, FILE\_COUNT, CONTENT\_SIZE, PATHNAME
 
-The -u and -q options control what columns the output contains.  -q means show quotas, -u limits the output to show quotas and usage only.
+The -u and -q options control what columns the output contains.  -q means show quotas and usage, -u limits the output to show quotas only.
 
 The output columns with -count -q are: QUOTA, REMAINING\_QUOTA, SPACE\_QUOTA, REMAINING\_SPACE\_QUOTA, DIR\_COUNT, FILE\_COUNT, CONTENT\_SIZE, PATHNAME
 
 The output columns with -count -u are: QUOTA, REMAINING\_QUOTA, SPACE\_QUOTA, REMAINING\_SPACE\_QUOTA, PATHNAME
 
-The -t option shows the quota and usage for each storage type. The -t option is ignored if -u or -q option is not given. The list of possible parameters that can be used in -t option(case insensitive except the parameter ""): "", "all", "ram_disk", "ssd", "disk" or "archive".
+The -t option shows the quota and usage for each storage type. The -t option is ignored if -u or -q option is not given. The list of possible parameters that can be used in -t option(case insensitive except the parameter): "", "all", "ram_disk", "ssd", "disk" or "archive".
 
 The -h option shows sizes in human readable format.
 
@@ -289,7 +295,7 @@ rather than the default filesystem and checkpoint is created.
 For example
 
 ```
-hadoop fs -expunge --immediate -fs s3a://landsat-pds/
+hadoop fs -expunge -immediate -fs s3a://landsat-pds/
 ```
 
 Refer to the
@@ -305,13 +311,69 @@ Finds all files that match the specified expression and applies selected actions
 
 The following primary expressions are recognised:
 
+*   -atime n<br />-amin n
+
+    Evaluates as true if the file access time subtracted from the start time is n days (or minutes if -amin is used).
+
+*   -blocksize n
+
+    Evaluates to true if the block size of the file is n.
+
+*   -empty
+
+    Evaluates as true if the file is empty or directory has no contents.
+
+*   -group groupname
+
+    Evaluates as true if the file belongs to the specified group.
+
+*   -mtime n<br />-mmin n
+
+    Evaluates as true if the file modification time subtracted from the start time is n days (or minutes if -mmin is used)
+
 *   -name pattern<br />-iname pattern
 
     Evaluates as true if the basename of the file matches the pattern using standard file system globbing. If -iname is used then the match is case insensitive.
 
+*   -newer file
+
+    Evaluates as true if the modification time of the current file is more recent than the modification time of the specified file.
+
+*   -nogroup
+
+    Evaluates as true if the file does not have a valid group.
+
+*   -nouser
+
+    Evaluates as true if the file does not have a valid owner.
+
+*   -perm [-]mode<br />-perm [-]onum
+
+    Evaluates as true if the file permissions match that specified. If the hyphen is specified then the expression shall evaluate as true if at least the bits specified match, otherwise an exact match is required. The mode may be specified using either symbolic notation, eg 'u=rwx,g+x+w' or as an octal number.
+
 *   -print<br />-print0
 
     Always evaluates to true. Causes the current pathname to be written to standard output. If the -print0 expression is used then an ASCII NULL character is appended.
+
+*   -regex pattern<br />-iregex pattern
+
+    Evaluates as true if the whole file path matches the regular expression pattern. If -iregex is used then the match is case insensitive.
+
+*   -replicas n
+
+    Evaluates to true if the number of file replicas is n.
+
+*   -size n[c]
+
+    Evaluates to true if the file size in 512 byte blocks is n. If n is followed by the character 'c' then the size is in bytes.
+
+*   -type filetype
+
+    Evaluates to true if the file type matches that specified. The following file type values are supported: 'd' (directory), 'l' (symbolic link), 'f' (regular file).
+
+*   -user username
+
+    Evaluates as true if the owner of the file matches the specified user.
 
 The following operators are recognised:
 

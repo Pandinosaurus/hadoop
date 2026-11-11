@@ -19,6 +19,9 @@
 package org.apache.hadoop.mapreduce.v2.app.launcher;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 
 import java.io.IOException;
@@ -44,7 +47,6 @@ import org.apache.hadoop.yarn.api.protocolrecords.ResourceLocalizationRequest;
 import org.apache.hadoop.yarn.api.protocolrecords.ResourceLocalizationResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.RestartContainerResponse;
 import org.apache.hadoop.yarn.api.protocolrecords.RollbackResponse;
-import org.junit.jupiter.api.Assertions;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeysPublic;
 import org.apache.hadoop.ipc.Server;
@@ -109,8 +111,9 @@ public class TestContainerLauncher {
       LoggerFactory.getLogger(TestContainerLauncher.class);
 
   @Test
-  @Timeout(10000)
+  @Timeout(value = 10)
   public void testPoolSize() throws InterruptedException {
+
     ApplicationId appId = ApplicationId.newInstance(12345, 67);
     ApplicationAttemptId appAttemptId = ApplicationAttemptId.newInstance(
       appId, 3);
@@ -128,10 +131,10 @@ public class TestContainerLauncher {
     // No events yet
     assertThat(containerLauncher.initialPoolSize).isEqualTo(
         MRJobConfig.DEFAULT_MR_AM_CONTAINERLAUNCHER_THREADPOOL_INITIAL_SIZE);
-    Assertions.assertEquals(0, threadPool.getPoolSize());
-    Assertions.assertEquals(containerLauncher.initialPoolSize,
+    assertEquals(0, threadPool.getPoolSize());
+    assertEquals(containerLauncher.initialPoolSize,
       threadPool.getCorePoolSize());
-    Assertions.assertNull(containerLauncher.foundErrors);
+    assertNull(containerLauncher.foundErrors);
 
     containerLauncher.expectedCorePoolSize = containerLauncher.initialPoolSize;
     for (int i = 0; i < 10; i++) {
@@ -142,8 +145,8 @@ public class TestContainerLauncher {
         ContainerLauncher.EventType.CONTAINER_REMOTE_LAUNCH));
     }
     waitForEvents(containerLauncher, 10);
-    Assertions.assertEquals(10, threadPool.getPoolSize());
-    Assertions.assertNull(containerLauncher.foundErrors);
+    assertEquals(10, threadPool.getPoolSize());
+    assertNull(containerLauncher.foundErrors);
 
     // Same set of hosts, so no change
     containerLauncher.finishEventHandling = true;
@@ -154,7 +157,7 @@ public class TestContainerLauncher {
           + ". Timeout is " + timeOut);
       Thread.sleep(1000);
     }
-    Assertions.assertEquals(10, containerLauncher.numEventsProcessed.get());
+    assertEquals(10, containerLauncher.numEventsProcessed.get());
     containerLauncher.finishEventHandling = false;
     for (int i = 0; i < 10; i++) {
       ContainerId containerId = ContainerId.newContainerId(appAttemptId,
@@ -166,8 +169,8 @@ public class TestContainerLauncher {
         ContainerLauncher.EventType.CONTAINER_REMOTE_LAUNCH));
     }
     waitForEvents(containerLauncher, 20);
-    Assertions.assertEquals(10, threadPool.getPoolSize());
-    Assertions.assertNull(containerLauncher.foundErrors);
+    assertEquals(10, threadPool.getPoolSize());
+    assertNull(containerLauncher.foundErrors);
 
     // Different hosts, there should be an increase in core-thread-pool size to
     // 21(11hosts+10buffer)
@@ -180,8 +183,8 @@ public class TestContainerLauncher {
       containerId, "host11:1234", null,
       ContainerLauncher.EventType.CONTAINER_REMOTE_LAUNCH));
     waitForEvents(containerLauncher, 21);
-    Assertions.assertEquals(11, threadPool.getPoolSize());
-    Assertions.assertNull(containerLauncher.foundErrors);
+    assertEquals(11, threadPool.getPoolSize());
+    assertNull(containerLauncher.foundErrors);
 
     containerLauncher.stop();
 
@@ -196,7 +199,7 @@ public class TestContainerLauncher {
   }
 
   @Test
-  @Timeout(5000)
+  @Timeout(value = 5)
   public void testPoolLimits() throws InterruptedException {
     ApplicationId appId = ApplicationId.newInstance(12345, 67);
     ApplicationAttemptId appAttemptId = ApplicationAttemptId.newInstance(
@@ -224,8 +227,8 @@ public class TestContainerLauncher {
         ContainerLauncher.EventType.CONTAINER_REMOTE_LAUNCH));
     }
     waitForEvents(containerLauncher, 10);
-    Assertions.assertEquals(10, threadPool.getPoolSize());
-    Assertions.assertNull(containerLauncher.foundErrors);
+    assertEquals(10, threadPool.getPoolSize());
+    assertNull(containerLauncher.foundErrors);
 
     // 4 more different hosts, but thread pool size should be capped at 12
     containerLauncher.expectedCorePoolSize = 12 ;
@@ -235,14 +238,14 @@ public class TestContainerLauncher {
         ContainerLauncher.EventType.CONTAINER_REMOTE_LAUNCH));
     }
     waitForEvents(containerLauncher, 12);
-    Assertions.assertEquals(12, threadPool.getPoolSize());
-    Assertions.assertNull(containerLauncher.foundErrors);
+    assertEquals(12, threadPool.getPoolSize());
+    assertNull(containerLauncher.foundErrors);
 
     // Make some threads ideal so that remaining events are also done.
     containerLauncher.finishEventHandling = true;
     waitForEvents(containerLauncher, 14);
-    Assertions.assertEquals(12, threadPool.getPoolSize());
-    Assertions.assertNull(containerLauncher.foundErrors);
+    assertEquals(12, threadPool.getPoolSize());
+    assertNull(containerLauncher.foundErrors);
 
     containerLauncher.stop();
   }
@@ -256,13 +259,13 @@ public class TestContainerLauncher {
           + ". It is now " + containerLauncher.numEventsProcessing.get());
       Thread.sleep(1000);
     }
-    Assertions.assertEquals(expectedNumEvents,
-      containerLauncher.numEventsProcessing.get());
+    assertEquals(expectedNumEvents, containerLauncher.numEventsProcessing.get());
   }
 
   @Test
-  @Timeout(15000)
+  @Timeout(value = 15)
   public void testSlowNM() throws Exception {
+
     conf = new Configuration();
     int maxAttempts = 1;
     conf.setInt(MRJobConfig.MAP_MAX_ATTEMPTS, maxAttempts);
@@ -292,16 +295,14 @@ public class TestContainerLauncher {
     app.waitForState(job, JobState.RUNNING);
 
     Map<TaskId, Task> tasks = job.getTasks();
-    Assertions.assertEquals(1, tasks.size(),
-          "Num tasks is not correct");
+      assertEquals(1, tasks.size(), "Num tasks is not correct");
 
     Task task = tasks.values().iterator().next();
     app.waitForState(task, TaskState.SCHEDULED);
 
     Map<TaskAttemptId, TaskAttempt> attempts = tasks.values().iterator()
         .next().getAttempts();
-      Assertions.assertEquals(maxAttempts, attempts.size(),
-          "Num attempts is not correct");
+      assertEquals(maxAttempts, attempts.size(), "Num attempts is not correct");
 
     TaskAttempt attempt = attempts.values().iterator().next();
       app.waitForInternalState((TaskAttemptImpl) attempt,
@@ -312,11 +313,10 @@ public class TestContainerLauncher {
     String diagnostics = attempt.getDiagnostics().toString();
     LOG.info("attempt.getDiagnostics: " + diagnostics);
 
-      Assertions.assertTrue(diagnostics.contains("Container launch failed for "
+      assertTrue(diagnostics.contains("Container launch failed for "
           + "container_0_0000_01_000000 : "));
-      Assertions
-          .assertTrue(diagnostics
-              .contains("java.net.SocketTimeoutException: 3000 millis timeout while waiting for channel"));
+      assertTrue(diagnostics.contains(
+          "java.net.SocketTimeoutException: 3000 millis timeout while waiting for channel"));
 
     } finally {
       server.stop();
@@ -443,7 +443,7 @@ public class TestContainerLauncher {
           MRApp.newContainerTokenIdentifier(request.getContainerToken());
 
       // Validate that the container is what RM is giving.
-      Assertions.assertEquals(MRApp.NM_HOST + ":" + MRApp.NM_PORT,
+      assertEquals(MRApp.NM_HOST + ":" + MRApp.NM_PORT,
         containerTokenIdentifier.getNmHostAddress());
 
       StartContainersResponse response = recordFactory

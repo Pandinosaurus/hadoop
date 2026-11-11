@@ -25,11 +25,17 @@ import java.io.ObjectInputStream;
 import java.io.Serializable;
 import java.util.Objects;
 
+import com.google.common.annotations.VisibleForTesting;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.hadoop.fs.s3a.S3AEncryptionMethods;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
+
+import static org.apache.hadoop.fs.s3a.Constants.DEFAULT_S3_ENCRYPTION_CONTEXT;
 
 /**
  * Encryption options in a form which can serialized or marshalled as a hadoop
@@ -52,9 +58,24 @@ import org.apache.hadoop.io.Writable;
  */
 public class EncryptionSecrets implements Writable, Serializable {
 
+  private static final Logger LOG =
+          LoggerFactory.getLogger(EncryptionSecrets.class);
+
   public static final int MAX_SECRET_LENGTH = 2048;
 
-  private static final long serialVersionUID = 1208329045511296375L;
+  /**
+   * Change this after any change to the payload: {@value}.
+   */
+  private static final long serialVersionUID = 8834417969966697162L;
+
+  @VisibleForTesting
+  public static final long SERIAL_VERSION_UID_CURRENT = serialVersionUID;
+
+  /**
+   * Serial version ID prior to {@link #encryptionContext} field being added: {@value}.
+   */
+  @VisibleForTesting
+  public static final long SERIAL_VERSION_UID_1 = 1208329045511296375L;
 
   /**
    * Encryption algorithm to use: must match one in
@@ -66,6 +87,11 @@ public class EncryptionSecrets implements Writable, Serializable {
    * Encryption key: possibly sensitive information.
    */
   private String encryptionKey = "";
+
+  /**
+   * Encryption context: base64-encoded UTF-8 string.
+   */
+  private String encryptionContext = DEFAULT_S3_ENCRYPTION_CONTEXT;
 
   /**
    * This field isn't serialized/marshalled; it is rebuilt from the
@@ -81,26 +107,48 @@ public class EncryptionSecrets implements Writable, Serializable {
   }
 
   /**
-   * Create a pair of secrets.
+   * Create a tuple of secrets. The encryption context is set to "".
+   * This constructor is used in external implementations of S3A delegation
+   * tokens, sp MUST be retained even if there is no use in our own
+   * production code.
    * @param encryptionAlgorithm algorithm enumeration.
    * @param encryptionKey key/key reference.
    * @throws IOException failure to initialize.
+   * @deprecated use {@link #EncryptionSecrets(S3AEncryptionMethods, String, String)}
+   * which takes an encryption context.
    */
   public EncryptionSecrets(final S3AEncryptionMethods encryptionAlgorithm,
       final String encryptionKey) throws IOException {
-    this(encryptionAlgorithm.getMethod(), encryptionKey);
+    this(encryptionAlgorithm.getMethod(), encryptionKey,
+        DEFAULT_S3_ENCRYPTION_CONTEXT);
   }
 
   /**
-   * Create a pair of secrets.
+   * Create a 3/tuple of secrets.
+   * @param encryptionAlgorithm algorithm enumeration.
+   * @param encryptionKey key/key reference.
+   * @param encryptionContext  base64-encoded string with the encryption context key-value pairs.
+   * @throws IOException failure to initialize.
+   */
+  public EncryptionSecrets(final S3AEncryptionMethods encryptionAlgorithm,
+      final String encryptionKey,
+      final String encryptionContext) throws IOException {
+    this(encryptionAlgorithm.getMethod(), encryptionKey, encryptionContext);
+  }
+
+  /**
+   * Create a 3/tuple of secrets.
    * @param encryptionAlgorithm algorithm name
    * @param encryptionKey key/key reference.
+   * @param encryptionContext  base64-encoded string with the encryption context key-value pairs.
    * @throws IOException failure to initialize.
    */
   public EncryptionSecrets(final String encryptionAlgorithm,
-      final String encryptionKey) throws IOException {
+      final String encryptionKey,
+      final String encryptionContext) throws IOException {
     this.encryptionAlgorithm = encryptionAlgorithm;
     this.encryptionKey = encryptionKey;
+    this.encryptionContext = encryptionContext;
     init();
   }
 
@@ -114,6 +162,7 @@ public class EncryptionSecrets implements Writable, Serializable {
     new LongWritable(serialVersionUID).write(out);
     Text.writeString(out, encryptionAlgorithm);
     Text.writeString(out, encryptionKey);
+    Text.writeString(out, encryptionContext);
   }
 
   /**
@@ -126,12 +175,26 @@ public class EncryptionSecrets implements Writable, Serializable {
   public void readFields(final DataInput in) throws IOException {
     final LongWritable version = new LongWritable();
     version.readFields(in);
-    if (version.get() != serialVersionUID) {
+    boolean readContext;
+
+    final long versionId = version.get();
+    if (versionId == SERIAL_VERSION_UID_1) {
+      LOG.info("Unmarshalling Encryption Secrets from older client; "
+          + "setting encryption context to \"\"");
+      readContext = false;
+    } else if (versionId == serialVersionUID) {
+      readContext = true;
+    } else {
       throw new DelegationTokenIOException(
-          "Incompatible EncryptionSecrets version");
+          "Incompatible EncryptionSecrets version: " + versionId);
     }
     encryptionAlgorithm = Text.readString(in, MAX_SECRET_LENGTH);
     encryptionKey = Text.readString(in, MAX_SECRET_LENGTH);
+    if (readContext) {
+      encryptionContext = Text.readString(in);
+    } else {
+      encryptionContext = DEFAULT_S3_ENCRYPTION_CONTEXT;
+    }
     init();
   }
 
@@ -156,12 +219,28 @@ public class EncryptionSecrets implements Writable, Serializable {
         encryptionAlgorithm);
   }
 
+  /**
+   * Get the encryption algorithm.
+   * @return the encryption algorithm.
+   */
   public String getEncryptionAlgorithm() {
     return encryptionAlgorithm;
   }
 
+  /**
+   * Get the encryption key.
+   * @return the encryption key.
+   */
   public String getEncryptionKey() {
     return encryptionKey;
+  }
+
+  /**
+   * Get the encryption context.
+   * @return the encryption context.
+   */
+  public String getEncryptionContext() {
+    return encryptionContext;
   }
 
   /**
@@ -181,6 +260,14 @@ public class EncryptionSecrets implements Writable, Serializable {
     return StringUtils.isNotEmpty(encryptionKey);
   }
 
+  /**
+   * Does this instance have an encryption context?
+   * @return true if there's an encryption context.
+   */
+  public boolean hasEncryptionContext() {
+    return StringUtils.isNotEmpty(encryptionContext);
+  }
+
   @Override
   public boolean equals(final Object o) {
     if (this == o) {
@@ -191,12 +278,13 @@ public class EncryptionSecrets implements Writable, Serializable {
     }
     final EncryptionSecrets that = (EncryptionSecrets) o;
     return Objects.equals(encryptionAlgorithm, that.encryptionAlgorithm)
-        && Objects.equals(encryptionKey, that.encryptionKey);
+        && Objects.equals(encryptionKey, that.encryptionKey)
+        && Objects.equals(encryptionContext, that.encryptionContext);
   }
 
   @Override
   public int hashCode() {
-    return Objects.hash(encryptionAlgorithm, encryptionKey);
+    return Objects.hash(encryptionAlgorithm, encryptionKey, encryptionContext);
   }
 
   /**

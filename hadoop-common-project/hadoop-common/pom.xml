@@ -20,11 +20,11 @@
   <parent>
     <groupId>org.apache.hadoop</groupId>
     <artifactId>hadoop-project-dist</artifactId>
-    <version>3.4.0-SNAPSHOT</version>
+    <version>3.6.0-SNAPSHOT</version>
     <relativePath>../../hadoop-project-dist</relativePath>
   </parent>
   <artifactId>hadoop-common</artifactId>
-  <version>3.4.0-SNAPSHOT</version>
+  <version>3.6.0-SNAPSHOT</version>
   <description>Apache Hadoop Common</description>
   <name>Apache Hadoop Common</name>
   <packaging>jar</packaging>
@@ -40,7 +40,7 @@
   <dependencies>
     <dependency>
       <groupId>org.apache.hadoop.thirdparty</groupId>
-      <artifactId>hadoop-shaded-protobuf_3_7</artifactId>
+      <artifactId>hadoop-shaded-protobuf_3_25</artifactId>
     </dependency>
     <dependency>
       <groupId>org.apache.hadoop</groupId>
@@ -88,14 +88,38 @@
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>commons-collections</groupId>
-      <artifactId>commons-collections</artifactId>
+      <groupId>org.apache.commons</groupId>
+      <artifactId>commons-collections4</artifactId>
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>javax.servlet</groupId>
-      <artifactId>javax.servlet-api</artifactId>
+      <groupId>jakarta.servlet.jsp</groupId>
+      <artifactId>jakarta.servlet.jsp-api</artifactId>
       <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>jakarta.ws.rs</groupId>
+      <artifactId>jakarta.ws.rs-api</artifactId>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.glassfish.jersey.core</groupId>
+      <artifactId>jersey-server</artifactId>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.glassfish.jersey.containers</groupId>
+      <artifactId>jersey-container-servlet</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>javax.servlet</groupId>
+          <artifactId>javax.servlet-api</artifactId>
+        </exclusion>
+      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>org.glassfish.jersey.inject</groupId>
+      <artifactId>jersey-hk2</artifactId>
     </dependency>
     <dependency>
       <groupId>jakarta.activation</groupId>
@@ -111,6 +135,12 @@
       <groupId>org.eclipse.jetty</groupId>
       <artifactId>jetty-util</artifactId>
       <scope>compile</scope>
+      <exclusions>
+        <exclusion>
+          <artifactId>javax.servlet-api</artifactId>
+          <groupId>javax.servlet</groupId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>org.eclipse.jetty</groupId>
@@ -123,87 +153,14 @@
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.eclipse.jetty</groupId>
-      <artifactId>jetty-util-ajax</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>javax.servlet.jsp</groupId>
-      <artifactId>jsp-api</artifactId>
-      <scope>runtime</scope>
-    </dependency>
-    <dependency>
-      <groupId>com.sun.jersey</groupId>
-      <artifactId>jersey-core</artifactId>
+      <groupId>ch.qos.reload4j</groupId>
+      <artifactId>reload4j</artifactId>
       <scope>compile</scope>
-    </dependency>
-    <dependency>
-      <groupId>com.sun.jersey</groupId>
-      <artifactId>jersey-servlet</artifactId>
-      <scope>compile</scope>
-      <exclusions>
-        <exclusion>
-          <groupId>javax.enterprise</groupId>
-          <artifactId>cdi-api</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>javax.servlet</groupId>
-          <artifactId>servlet-api</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>ch.qos.cal10n</groupId>
-          <artifactId>cal10n-api</artifactId>
-        </exclusion>
-      </exclusions>
-    </dependency>
-    <dependency>
-      <groupId>com.github.pjfanning</groupId>
-      <artifactId>jersey-json</artifactId>
-      <scope>compile</scope>
-      <exclusions>
-        <exclusion>
-          <groupId>com.fasterxml.jackson.core</groupId>
-          <artifactId>jackson-core</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>com.fasterxml.jackson.core</groupId>
-          <artifactId>jackson-databind</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>com.fasterxml.jackson.jaxrs</groupId>
-          <artifactId>jackson-jaxrs-json-provider</artifactId>
-        </exclusion>
-      </exclusions>
-    </dependency>
-    <dependency>
-      <groupId>com.sun.jersey</groupId>
-      <artifactId>jersey-server</artifactId>
-      <scope>compile</scope>
-    </dependency>
-    <dependency>
-      <groupId>commons-logging</groupId>
-      <artifactId>commons-logging</artifactId>
-      <scope>compile</scope>
-    </dependency>
-    <dependency>
-      <groupId>log4j</groupId>
-      <artifactId>log4j</artifactId>
-      <scope>compile</scope>
-    </dependency>
-    <dependency>
-      <groupId>junit</groupId>
-      <artifactId>junit</artifactId>
-      <scope>test</scope>
     </dependency>
     <dependency>
       <groupId>org.assertj</groupId>
       <artifactId>assertj-core</artifactId>
       <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>commons-beanutils</groupId>
-      <artifactId>commons-beanutils</artifactId>
-      <scope>compile</scope>
     </dependency>
     <dependency>
       <groupId>org.apache.commons</groupId>
@@ -233,12 +190,17 @@
     </dependency>
     <dependency>
       <groupId>org.slf4j</groupId>
-      <artifactId>slf4j-log4j12</artifactId>
+      <artifactId>slf4j-reload4j</artifactId>
       <scope>compile</scope>
     </dependency>
     <dependency>
       <groupId>org.mockito</groupId>
-      <artifactId>mockito-core</artifactId>
+      <artifactId>mockito-inline</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.mockito</groupId>
+      <artifactId>mockito-junit-jupiter</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -256,10 +218,11 @@
       <artifactId>re2j</artifactId>
       <scope>compile</scope>
     </dependency>
+    <!-- Needed for compilation, though no longer in production.  -->
     <dependency>
       <groupId>com.google.protobuf</groupId>
       <artifactId>protobuf-java</artifactId>
-      <scope>compile</scope>
+      <scope>${common.protobuf2.scope}</scope>
     </dependency>
     <dependency>
       <groupId>com.google.code.gson</groupId>
@@ -309,6 +272,11 @@
       <scope>test</scope>
     </dependency>
     <dependency>
+      <groupId>org.apache.sshd</groupId>
+      <artifactId>sshd-sftp</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>org.apache.ftpserver</groupId>
       <artifactId>ftpserver-core</artifactId>
       <scope>test</scope>
@@ -317,25 +285,14 @@
     <dependency>
       <groupId>org.apache.zookeeper</groupId>
       <artifactId>zookeeper</artifactId>
-      <exclusions>
-        <exclusion>
-          <groupId>org.jboss.netty</groupId>
-          <artifactId>netty</artifactId>
-        </exclusion>
-        <exclusion>
-          <!-- otherwise seems to drag in junit 3.8.1 via jline -->
-          <groupId>junit</groupId>
-          <artifactId>junit</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>com.sun.jdmk</groupId>
-          <artifactId>jmxtools</artifactId>
-        </exclusion>
-        <exclusion>
-          <groupId>com.sun.jmx</groupId>
-          <artifactId>jmxri</artifactId>
-        </exclusion>
-      </exclusions>
+    </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-handler</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.netty</groupId>
+      <artifactId>netty-transport-native-epoll</artifactId>
     </dependency>
     <dependency>
       <groupId>io.dropwizard.metrics</groupId>
@@ -353,7 +310,7 @@
     </dependency>
     <dependency>
       <groupId>org.bouncycastle</groupId>
-      <artifactId>bcprov-jdk15on</artifactId>
+      <artifactId>bcprov-jdk18on</artifactId>
     </dependency>
     <dependency>
       <groupId>org.apache.kerby</groupId>
@@ -375,12 +332,12 @@
     </dependency>
     <dependency>
       <groupId>com.squareup.okhttp3</groupId>
-      <artifactId>mockwebserver</artifactId>
+      <artifactId>mockwebserver3-junit5</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>com.squareup.okio</groupId>
-      <artifactId>okio-jvm</artifactId>
+      <groupId>org.jetbrains.kotlin</groupId>
+      <artifactId>kotlin-stdlib-jdk8</artifactId>
       <scope>test</scope>
     </dependency>
     <dependency>
@@ -404,9 +361,39 @@
       <scope>compile</scope>
     </dependency>
     <dependency>
-      <groupId>org.lz4</groupId>
+      <groupId>at.yawk.lz4</groupId>
       <artifactId>lz4-java</artifactId>
       <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>com.github.luben</groupId>
+      <artifactId>zstd-jni</artifactId>
+      <scope>compile</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-api</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-engine</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter-params</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.platform</groupId>
+      <artifactId>junit-platform-launcher</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.glassfish.jaxb</groupId>
+      <artifactId>jaxb-runtime</artifactId>
+      <scope>runtime</scope>
     </dependency>
   </dependencies>
 
@@ -489,11 +476,11 @@
               <!--These classes have direct Protobuf references for backward compatibility reasons-->
               <excludes>
                 <exclude>**/ProtobufHelper.java</exclude>
-                <exclude>**/RpcWritable.java</exclude>
                 <exclude>**/ProtobufRpcEngineCallback.java</exclude>
                 <exclude>**/ProtobufRpcEngine.java</exclude>
                 <exclude>**/ProtobufRpcEngine2.java</exclude>
                 <exclude>**/ProtobufRpcEngineProtos.java</exclude>
+                <exclude>**/ProtobufWrapperLegacy.java</exclude>
               </excludes>
             </configuration>
           </execution>
@@ -625,6 +612,7 @@
             <exclude>src/main/native/*</exclude>
             <exclude>src/main/native/config/*</exclude>
             <exclude>src/main/native/m4/*</exclude>
+            <exclude>src/main/winutils/winutils.sln</exclude>
             <exclude>src/test/empty-file</exclude>
             <exclude>src/test/all-tests</exclude>
             <exclude>src/main/native/gtest/**/*</exclude>
@@ -634,6 +622,7 @@
             <exclude>src/test/resources/test.har/_masterindex</exclude>
             <exclude>src/test/resources/test.har/part-0</exclude>
             <exclude>src/test/resources/javakeystoreprovider.password</exclude>
+            <exclude>src/test/resources/lz4/sequencefile</exclude>
             <exclude>dev-support/jdiff-workaround.patch</exclude>
           </excludes>
         </configuration>
@@ -649,9 +638,10 @@
                     <goal>exec</goal>
                 </goals>
                 <configuration>
-                    <executable>${basedir}/../../dev-support/bin/shelldocs</executable>
+                    <executable>${shell-executable}</executable>
                     <workingDirectory>src/site/markdown</workingDirectory>
                     <arguments>
+                        <argument>${basedir}/../../dev-support/bin/shelldocs</argument>
                         <argument>--skipprnorep</argument>
                         <argument>--output</argument>
                         <argument>${basedir}/src/site/markdown/UnixShellAPI.md</argument>
@@ -684,6 +674,17 @@
           </filesets>
         </configuration>
       </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-javadoc-plugin</artifactId>
+        <configuration>
+          <sourceFileExcludes>
+            <sourceFileExclude>**/FSProtos.java</sourceFileExclude>
+          </sourceFileExcludes>
+          <excludePackageNames>*.proto:*.tracing:*.protobuf</excludePackageNames>
+        </configuration>
+      </plugin>
     </plugins>
   </build>
 
@@ -695,10 +696,6 @@
       </activation>
       <properties>
         <require.bzip2>false</require.bzip2>
-        <zstd.prefix></zstd.prefix>
-        <zstd.lib></zstd.lib>
-        <zstd.include></zstd.include>
-        <require.zstd>false</require.zstd>
         <openssl.prefix></openssl.prefix>
         <openssl.lib></openssl.lib>
         <openssl.include></openssl.include>
@@ -748,10 +745,6 @@
                     <GENERATED_JAVAH>${project.build.directory}/native/javah</GENERATED_JAVAH>
                     <JVM_ARCH_DATA_MODEL>${sun.arch.data.model}</JVM_ARCH_DATA_MODEL>
                     <REQUIRE_BZIP2>${require.bzip2}</REQUIRE_BZIP2>
-                    <REQUIRE_ZSTD>${require.zstd}</REQUIRE_ZSTD>
-                    <CUSTOM_ZSTD_PREFIX>${zstd.prefix}</CUSTOM_ZSTD_PREFIX>
-                    <CUSTOM_ZSTD_LIB>${zstd.lib} </CUSTOM_ZSTD_LIB>
-                    <CUSTOM_ZSTD_INCLUDE>${zstd.include} </CUSTOM_ZSTD_INCLUDE>
                     <REQUIRE_ISAL>${require.isal} </REQUIRE_ISAL>
                     <CUSTOM_ISAL_PREFIX>${isal.prefix} </CUSTOM_ISAL_PREFIX>
                     <CUSTOM_ISAL_LIB>${isal.lib} </CUSTOM_ISAL_LIB>
@@ -806,11 +799,6 @@
         <require.isal>false</require.isal>
         <isal.prefix></isal.prefix>
         <isal.lib></isal.lib>
-        <zstd.prefix></zstd.prefix>
-        <zstd.lib></zstd.lib>
-        <zstd.include></zstd.include>
-        <require.zstd>false</require.zstd>
-        <bundle.zstd.in.bin>true</bundle.zstd.in.bin>
         <openssl.prefix></openssl.prefix>
         <openssl.lib></openssl.lib>
         <openssl.include></openssl.include>
@@ -960,10 +948,6 @@
                     <argument>/nologo</argument>
                     <argument>/p:Configuration=Release</argument>
                     <argument>/p:OutDir=${project.build.directory}/bin/</argument>
-                    <argument>/p:CustomZstdPrefix=${zstd.prefix}</argument>
-                    <argument>/p:CustomZstdLib=${zstd.lib}</argument>
-                    <argument>/p:CustomZstdInclude=${zstd.include}</argument>
-                    <argument>/p:RequireZstd=${require.zstd}</argument>
                     <argument>/p:CustomOpensslPrefix=${openssl.prefix}</argument>
                     <argument>/p:CustomOpensslLib=${openssl.lib}</argument>
                     <argument>/p:CustomOpensslInclude=${openssl.include}</argument>
@@ -988,10 +972,6 @@
                     <argument>/nologo</argument>
                     <argument>/p:Configuration=Release</argument>
                     <argument>/p:OutDir=${project.build.directory}/bin/</argument>
-                    <argument>/p:CustomZstdPrefix=${zstd.prefix}</argument>
-                    <argument>/p:CustomZstdLib=${zstd.lib}</argument>
-                    <argument>/p:CustomZstdInclude=${zstd.include}</argument>
-                    <argument>/p:RequireZstd=${require.zstd}</argument>
                     <argument>/p:CustomOpensslPrefix=${openssl.prefix}</argument>
                     <argument>/p:CustomOpensslLib=${openssl.lib}</argument>
                     <argument>/p:CustomOpensslInclude=${openssl.include}</argument>
@@ -1034,7 +1014,7 @@
             <configuration>
               <forkCount>${testsThreadCount}</forkCount>
               <reuseForks>false</reuseForks>
-              <argLine>${maven-surefire-plugin.argLine} -DminiClusterDedicatedDirs=true</argLine>
+              <argLine>${maven-surefire-plugin.argLine} @{argLine} -DminiClusterDedicatedDirs=true</argLine>
               <systemPropertyVariables>
                 <testsThreadCount>${testsThreadCount}</testsThreadCount>
                 <test.build.data>${test.build.data}/${surefire.forkNumber}</test.build.data>
@@ -1071,9 +1051,9 @@
                         <goal>exec</goal>
                     </goals>
                     <configuration>
-                        <executable>${basedir}/../../dev-support/bin/releasedocmaker</executable>
-                        <requiresOnline>true</requiresOnline>
+                        <executable>${shell-executable}</executable>
                         <arguments>
+                            <argument>${basedir}/../../dev-support/bin/releasedocmaker</argument>
                             <argument>--index</argument>
                             <argument>--license</argument>
                             <argument>--outputdir</argument>
@@ -1151,13 +1131,13 @@
         </plugins>
       </build>
     </profile>
-    <!-- profile to use already generated protobuf code using 2.5.0 for aarch64-->
+    <!-- profile to use already generated protobuf code using 2.5.0 for non-x86_64-->
     <profile>
-      <id>aarch64</id>
+      <id>non-x86_64</id>
       <activation>
         <activeByDefault>false</activeByDefault>
         <os>
-          <arch>aarch64</arch>
+          <arch>!x86_64</arch>
         </os>
       </activation>
       <build>
@@ -1174,7 +1154,7 @@
                 </goals>
                 <configuration>
                   <sources>
-                    <source>${basedir}/src/main/arm-java</source>
+                    <source>${basedir}/src/main/proto2-generated</source>
                   </sources>
                 </configuration>
               </execution>
@@ -1186,7 +1166,7 @@
                 </goals>
                 <configuration>
                   <sources>
-                    <source>${basedir}/src/test/arm-java</source>
+                    <source>${basedir}/src/test/proto2-generated</source>
                   </sources>
                 </configuration>
               </execution>
@@ -1201,7 +1181,7 @@
       <activation>
         <activeByDefault>false</activeByDefault>
         <os>
-          <arch>!aarch64</arch>
+          <arch>x86_64</arch>
         </os>
       </activation>
       <build>
@@ -1254,16 +1234,6 @@
                 </configuration>
               </execution>
              </executions>
-          </plugin>
-          <plugin>
-            <groupId>org.apache.maven.plugins</groupId>
-            <artifactId>maven-javadoc-plugin</artifactId>
-            <configuration>
-              <sourceFileExcludes>
-                <sourceFileExclude>**/FSProtos.java</sourceFileExclude>
-              </sourceFileExcludes>
-              <excludePackageNames>*.proto:*.tracing:*.protobuf</excludePackageNames>
-            </configuration>
           </plugin>
         </plugins>
       </build>

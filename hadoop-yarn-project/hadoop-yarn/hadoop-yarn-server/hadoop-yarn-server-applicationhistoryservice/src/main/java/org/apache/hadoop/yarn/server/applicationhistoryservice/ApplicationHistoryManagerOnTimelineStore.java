@@ -45,7 +45,6 @@ import org.apache.hadoop.yarn.api.records.ContainerState;
 import org.apache.hadoop.yarn.api.records.FinalApplicationStatus;
 import org.apache.hadoop.yarn.api.records.NodeId;
 import org.apache.hadoop.yarn.api.records.Priority;
-import org.apache.hadoop.yarn.api.records.Resource;
 import org.apache.hadoop.yarn.api.records.ResourceInformation;
 import org.apache.hadoop.yarn.api.records.YarnApplicationAttemptState;
 import org.apache.hadoop.yarn.api.records.YarnApplicationState;
@@ -65,6 +64,7 @@ import org.apache.hadoop.yarn.server.timeline.NameValuePair;
 import org.apache.hadoop.yarn.server.timeline.TimelineDataManager;
 import org.apache.hadoop.yarn.server.timeline.TimelineReader.Field;
 import org.apache.hadoop.yarn.util.Apps;
+import org.apache.hadoop.yarn.util.timeline.TimelineUtils;
 import org.apache.hadoop.yarn.webapp.util.WebAppUtils;
 
 import org.apache.hadoop.classification.VisibleForTesting;
@@ -345,19 +345,19 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
         long preemptedVcoreSeconds = parseLong(entityInfo,
             ApplicationMetricsConstants.APP_CPU_PREEMPT_METRICS);
         Map<String, Long> resourceSecondsMap = new HashMap<>();
-        Map<String, Long> preemptedResoureSecondsMap = new HashMap<>();
+        Map<String, Long> preemptedResourceSecondsMap = new HashMap<>();
         resourceSecondsMap
             .put(ResourceInformation.MEMORY_MB.getName(), memorySeconds);
         resourceSecondsMap
             .put(ResourceInformation.VCORES.getName(), vcoreSeconds);
-        preemptedResoureSecondsMap.put(ResourceInformation.MEMORY_MB.getName(),
+        preemptedResourceSecondsMap.put(ResourceInformation.MEMORY_MB.getName(),
             preemptedMemorySeconds);
-        preemptedResoureSecondsMap
+        preemptedResourceSecondsMap
             .put(ResourceInformation.VCORES.getName(), preemptedVcoreSeconds);
 
         appResources = ApplicationResourceUsageReport
             .newInstance(0, 0, null, null, null, resourceSecondsMap, 0, 0,
-                preemptedResoureSecondsMap);
+                preemptedResourceSecondsMap);
       }
 
       if (entityInfo.containsKey(ApplicationMetricsConstants.APP_TAGS_INFO)) {
@@ -564,8 +564,6 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
 
   private static ContainerReport convertToContainerReport(
       TimelineEntity entity, String serverHttpAddress, String user) {
-    int allocatedMem = 0;
-    int allocatedVcore = 0;
     String allocatedHost = null;
     int allocatedPort = -1;
     int allocatedPriority = 0;
@@ -579,16 +577,6 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
 
     Map<String, Object> entityInfo = entity.getOtherInfo();
     if (entityInfo != null) {
-      if (entityInfo
-          .containsKey(ContainerMetricsConstants.ALLOCATED_MEMORY_INFO)) {
-        allocatedMem = (Integer) entityInfo.get(
-                ContainerMetricsConstants.ALLOCATED_MEMORY_INFO);
-      }
-      if (entityInfo
-          .containsKey(ContainerMetricsConstants.ALLOCATED_VCORE_INFO)) {
-        allocatedVcore = (Integer) entityInfo.get(
-                ContainerMetricsConstants.ALLOCATED_VCORE_INFO);
-      }
       if (entityInfo
           .containsKey(ContainerMetricsConstants.ALLOCATED_HOST_INFO)) {
         allocatedHost =
@@ -668,7 +656,7 @@ public class ApplicationHistoryManagerOnTimelineStore extends AbstractService
     }
     ContainerReport container = ContainerReport.newInstance(
         ContainerId.fromString(entity.getEntityId()),
-        Resource.newInstance(allocatedMem, allocatedVcore), allocatedNode,
+        TimelineUtils.getContainerResource(entityInfo), allocatedNode,
         Priority.newInstance(allocatedPriority),
         createdTime, finishedTime, diagnosticsInfo, logUrl, exitStatus, state,
         nodeHttpAddress);

@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.hdfs;
 
+import org.apache.hadoop.fs.LeaseRecoverable;
+import org.apache.hadoop.fs.SafeMode;
 import org.apache.hadoop.hdfs.protocol.LocatedBlocks;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.classification.VisibleForTesting;
@@ -61,16 +63,20 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.fs.QuotaUsage;
 import org.apache.hadoop.fs.RemoteIterator;
+import org.apache.hadoop.fs.SafeModeAction;
 import org.apache.hadoop.fs.StorageStatistics;
 import org.apache.hadoop.fs.StorageType;
 import org.apache.hadoop.fs.UnresolvedLinkException;
 import org.apache.hadoop.fs.UnsupportedFileSystemException;
 import org.apache.hadoop.fs.XAttrSetFlag;
+import org.apache.hadoop.fs.impl.AbstractFSBuilderImpl;
 import org.apache.hadoop.fs.impl.FileSystemMultipartUploaderBuilder;
+import org.apache.hadoop.fs.impl.OpenFileParameters;
 import org.apache.hadoop.fs.permission.AclEntry;
 import org.apache.hadoop.fs.permission.AclStatus;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.fs.WithErasureCoding;
 import org.apache.hadoop.hdfs.DFSOpsCountStatistics.OpType;
 import org.apache.hadoop.hdfs.client.DfsPathCapabilities;
 import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
@@ -95,7 +101,6 @@ import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.DatanodeReportType;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.ReencryptAction;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants.RollingUpgradeAction;
-import org.apache.hadoop.hdfs.protocol.HdfsConstants.SafeModeAction;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.HdfsPathHandle;
 import org.apache.hadoop.hdfs.protocol.HdfsLocatedFileStatus;
@@ -112,6 +117,7 @@ import org.apache.hadoop.io.Text;
 import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.DelegationTokenIssuer;
+import org.apache.hadoop.util.LambdaUtils;
 import org.apache.hadoop.util.Lists;
 import org.apache.hadoop.util.Progressable;
 import org.slf4j.Logger;
@@ -120,6 +126,8 @@ import org.slf4j.LoggerFactory;
 import javax.annotation.Nonnull;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.io.InputStream;
+import java.util.concurrent.CompletableFuture;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.util.ArrayList;
@@ -144,7 +152,8 @@ import static org.apache.hadoop.fs.impl.PathCapabilitiesSupport.validatePathCapa
 @InterfaceAudience.LimitedPrivate({ "MapReduce", "HBase" })
 @InterfaceStability.Unstable
 public class DistributedFileSystem extends FileSystem
-    implements KeyProviderTokenIssuer, BatchListingOperations {
+    implements KeyProviderTokenIssuer, BatchListingOperations, LeaseRecoverable, SafeMode,
+    WithErasureCoding {
   private Path workingDir;
   private URI uri;
 
@@ -306,6 +315,7 @@ public class DistributedFileSystem extends FileSystem
    * @return true if the file is already closed
    * @throws IOException if an error occurs
    */
+  @Override
   public boolean recoverLease(final Path f) throws IOException {
     Path absF = fixRelativePart(f);
     return new FileSystemLinkResolver<Boolean>() {
@@ -371,6 +381,99 @@ public class DistributedFileSystem extends FileSystem
     HdfsPathHandle id = (HdfsPathHandle) fd;
     final DFSInputStream dfsis = dfs.open(id, bufferSize, verifyChecksum);
     return dfs.createWrappedInputStream(dfsis);
+  }
+
+  @Override
+  protected CompletableFuture<FSDataInputStream> openFileWithOptions(
+      final Path path,
+      final OpenFileParameters parameters) throws IOException {
+    AbstractFSBuilderImpl.rejectUnknownMandatoryKeys(
+        parameters.getMandatoryKeys(),
+        Options.OpenFileOptions.FS_OPTION_OPENFILE_STANDARD_OPTIONS,
+        "for " + path);
+    statistics.incrementReadOps(1);
+    storageStatistics.incrementOpCounter(OpType.OPEN);
+    final Path absF = fixRelativePart(path);
+    return LambdaUtils.eval(new CompletableFuture<>(), () -> {
+      LocatedBlocks locatedBlocks =
+          getLocatedBlocksFromStatus(absF, parameters.getStatus());
+      final DFSInputStream dfsis;
+      if (locatedBlocks != null) {
+        dfsis = dfs.open(getPathName(absF), parameters.getBufferSize(),
+            verifyChecksum, locatedBlocks);
+      } else {
+        dfsis = dfs.open(getPathName(absF), parameters.getBufferSize(),
+            verifyChecksum);
+      }
+      try {
+        return dfs.createWrappedInputStream(dfsis);
+      } catch (IOException e) {
+        dfsis.close();
+        throw e;
+      }
+    });
+  }
+
+  private static LocatedBlocks getLocatedBlocksFromStatus(
+      Path path, FileStatus status) {
+    if (status instanceof HdfsLocatedFileStatus locatedFileStatus) {
+      Preconditions.checkArgument(
+          path.getName().equals(status.getPath().getName()),
+          "Filename mismatch between file being opened %s"
+              + " and supplied status %s",
+          path, status.getPath());
+      return locatedFileStatus.getLocatedBlocks();
+    }
+    return null;
+  }
+
+  /**
+   * Create a new input stream for the same file as an existing stream,
+   * reusing its cached block locations to avoid a NameNode RPC.
+   * The returned stream is independent (its own position, buffers, etc.)
+   * but shares the same block location metadata.
+   *
+   * @param existing an open input stream obtained from this filesystem
+   * @return a new independent input stream for the same file
+   * @throws IOException if the stream cannot be cloned
+   */
+  public FSDataInputStream cloneDataInputStream(FSDataInputStream existing)
+      throws IOException {
+    statistics.incrementReadOps(1);
+    storageStatistics.incrementOpCounter(OpType.OPEN);
+    InputStream wrapped = existing.getWrappedStream();
+    DFSInputStream dfsis;
+    if (wrapped instanceof DFSInputStream dfsIn) {
+      dfsis = dfsIn;
+    } else if (wrapped instanceof
+        org.apache.hadoop.crypto.CryptoInputStream cryptoIn) {
+      dfsis = (DFSInputStream) cryptoIn.getWrappedStream();
+    } else {
+      throw new IOException("Cannot clone: underlying stream is "
+          + wrapped.getClass().getName() + ", not a DFSInputStream");
+    }
+    if (dfsis.getDFSClient() != dfs) {
+      throw new IOException(
+          "Cannot clone: stream belongs to a different DFSClient instance");
+    }
+    LocatedBlocks locatedBlocks = dfsis.getLocatedBlocks();
+    String src = dfsis.getSrc();
+    DFSInputStream clone = dfs.open(src,
+        dfs.getConf().getIoBufferSize(), verifyChecksum, locatedBlocks);
+    try {
+      return dfs.createWrappedInputStream(clone);
+    } catch (IOException e) {
+      clone.close();
+      throw e;
+    }
+  }
+
+  @Override
+  public String getErasureCodingPolicyName(FileStatus fileStatus) {
+    if (!(fileStatus instanceof HdfsFileStatus)) {
+      return null;
+    }
+    return ((HdfsFileStatus) fileStatus).getErasureCodingPolicy().getName();
   }
 
   /**
@@ -1633,6 +1736,63 @@ public class DistributedFileSystem extends FileSystem
    * @see org.apache.hadoop.hdfs.protocol.ClientProtocol#setSafeMode(
    *    HdfsConstants.SafeModeAction,boolean)
    */
+  @Override
+  public boolean setSafeMode(SafeModeAction action)
+      throws IOException {
+    return setSafeMode(action, false);
+  }
+
+  /**
+   * Enter, leave or get safe mode.
+   *
+   * @param action
+   *          One of SafeModeAction.ENTER, SafeModeAction.LEAVE and
+   *          SafeModeAction.GET.
+   * @param isChecked
+   *          If true check only for Active NNs status, else check first NN's
+   *          status.
+   */
+  @Override
+  @SuppressWarnings("deprecation")
+  public boolean setSafeMode(SafeModeAction action, boolean isChecked)
+      throws IOException {
+    return this.setSafeMode(convertToClientProtocolSafeModeAction(action), isChecked);
+  }
+
+  /**
+   * Translating the {@link SafeModeAction} into {@link HdfsConstants.SafeModeAction}
+   * that is used by {@link DFSClient#setSafeMode(HdfsConstants.SafeModeAction, boolean)}.
+   *
+   * @param action any supported action listed in {@link SafeModeAction}.
+   * @return the converted {@link HdfsConstants.SafeModeAction}.
+   * @throws UnsupportedOperationException if the provided {@link SafeModeAction} cannot be
+   *           translated.
+   */
+  private static HdfsConstants.SafeModeAction convertToClientProtocolSafeModeAction(
+      SafeModeAction action) {
+    switch (action) {
+    case ENTER:
+      return HdfsConstants.SafeModeAction.SAFEMODE_ENTER;
+    case LEAVE:
+      return HdfsConstants.SafeModeAction.SAFEMODE_LEAVE;
+    case FORCE_EXIT:
+      return HdfsConstants.SafeModeAction.SAFEMODE_FORCE_EXIT;
+    case GET:
+      return HdfsConstants.SafeModeAction.SAFEMODE_GET;
+    default:
+      throw new UnsupportedOperationException("Unsupported safe mode action " + action);
+    }
+  }
+
+  /**
+   * Enter, leave or get safe mode.
+   *
+   * @see org.apache.hadoop.hdfs.protocol.ClientProtocol#setSafeMode(HdfsConstants.SafeModeAction,
+   * boolean)
+   *
+   * @deprecated please instead use {@link #setSafeMode(SafeModeAction)}.
+   */
+  @Deprecated
   public boolean setSafeMode(HdfsConstants.SafeModeAction action)
       throws IOException {
     return setSafeMode(action, false);
@@ -1643,12 +1803,18 @@ public class DistributedFileSystem extends FileSystem
    *
    * @param action
    *          One of SafeModeAction.ENTER, SafeModeAction.LEAVE and
-   *          SafeModeAction.GET
+   *          SafeModeAction.GET.
    * @param isChecked
    *          If true check only for Active NNs status, else check first NN's
-   *          status
-   * @see org.apache.hadoop.hdfs.protocol.ClientProtocol#setSafeMode(SafeModeAction, boolean)
+   *          status.
+   *
+   * @see org.apache.hadoop.hdfs.protocol.ClientProtocol#setSafeMode(HdfsConstants.SafeModeAction,
+   * boolean)
+   *
+   * @deprecated please instead use
+   *               {@link DistributedFileSystem#setSafeMode(SafeModeAction, boolean)}.
    */
+  @Deprecated
   public boolean setSafeMode(HdfsConstants.SafeModeAction action,
       boolean isChecked) throws IOException {
     return dfs.setSafeMode(action, isChecked);
@@ -1685,7 +1851,7 @@ public class DistributedFileSystem extends FileSystem
   }
 
   /**
-   * enable/disable/check restoreFaileStorage
+   * enable/disable/check restoreFaileStorage.
    *
    * @see org.apache.hadoop.hdfs.protocol.ClientProtocol#restoreFailedStorage(String arg)
    */
@@ -2048,7 +2214,7 @@ public class DistributedFileSystem extends FileSystem
    *           when there is an issue communicating with the NameNode
    */
   public boolean isInSafeMode() throws IOException {
-    return setSafeMode(SafeModeAction.SAFEMODE_GET, true);
+    return setSafeMode(HdfsConstants.SafeModeAction.SAFEMODE_GET, true);
   }
 
   /**
@@ -2464,6 +2630,7 @@ public class DistributedFileSystem extends FileSystem
    * @throws FileNotFoundException if the file does not exist.
    * @throws IOException If an I/O error occurred
    */
+  @Override
   public boolean isFileClosed(final Path src) throws IOException {
     Path absF = fixRelativePart(src);
     return new FileSystemLinkResolver<Boolean>() {
@@ -3545,6 +3712,8 @@ public class DistributedFileSystem extends FileSystem
    */
   @Override
   public Collection<FileStatus> getTrashRoots(boolean allUsers) {
+    statistics.incrementReadOps(1);
+    storageStatistics.incrementOpCounter(OpType.GET_TRASH_ROOTS);
     Set<FileStatus> ret = new HashSet<>();
     // Get normal trash roots
     ret.addAll(super.getTrashRoots(allUsers));
@@ -3793,6 +3962,10 @@ public class DistributedFileSystem extends FileSystem
      */
     @Override
     public FSDataOutputStream build() throws IOException {
+      String ecPolicy = getOptions().get(Options.OpenFileOptions.FS_OPTION_OPENFILE_EC_POLICY, "");
+      if (!ecPolicy.isEmpty()) {
+        ecPolicyName(ecPolicy);
+      }
       if (getFlags().contains(CreateFlag.CREATE) ||
           getFlags().contains(CreateFlag.OVERWRITE)) {
         if (isRecursive()) {
@@ -3885,6 +4058,7 @@ public class DistributedFileSystem extends FileSystem
     // (yet/ever) in the WebHDFS API.
     switch (validatePathCapabilityArgs(path, capability)) {
     case CommonPathCapabilities.FS_EXPERIMENTAL_BATCH_LISTING:
+    case CommonPathCapabilities.LEASE_RECOVERABLE:
       return true;
     default:
       // fall through
@@ -3938,6 +4112,33 @@ public class DistributedFileSystem extends FileSystem
         throw new UnsupportedOperationException("Cannot getLocatedBlocks " +
             "through a symlink to a non-DistributedFileSystem: " + fs + " -> "+
             p);
+      }
+    }.resolve(this, absF);
+  }
+
+  /**
+   * Return path of the enclosing root for a given path
+   * The enclosing root path is a common ancestor that should be used for temp and staging dirs
+   * as well as within encryption zones and other restricted directories.
+   *
+   * @param path file path to find the enclosing root path for
+   * @return a path to the enclosing root
+   * @throws IOException early checks like failure to resolve path cause IO failures
+   */
+  public Path getEnclosingRoot(final Path path) throws IOException {
+    statistics.incrementReadOps(1);
+    storageStatistics.incrementOpCounter(OpType.GET_ENCLOSING_ROOT);
+    Preconditions.checkNotNull(path);
+    Path absF = fixRelativePart(path);
+    return new FileSystemLinkResolver<Path>() {
+      @Override
+      public Path doCall(final Path p) throws IOException {
+        return dfs.getEnclosingRoot(getPathName(p));
+      }
+
+      @Override
+      public Path next(final FileSystem fs, final Path p) throws IOException {
+        return fs.getEnclosingRoot(p);
       }
     }.resolve(this, absF);
   }

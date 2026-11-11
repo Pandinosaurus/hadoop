@@ -18,9 +18,10 @@
 
 package org.apache.hadoop.yarn.server.resourcemanager.metrics;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -78,11 +79,13 @@ import org.apache.hadoop.yarn.server.timelineservice.storage.FileSystemTimelineR
 import org.apache.hadoop.yarn.server.timelineservice.storage.FileSystemTimelineWriterImpl;
 import org.apache.hadoop.yarn.server.timelineservice.storage.TimelineWriter;
 import org.apache.hadoop.yarn.util.TimelineServiceHelper;
+import org.apache.hadoop.yarn.util.resource.ResourceUtils;
+import org.apache.hadoop.yarn.util.timeline.TimelineEntityV2Converter;
 import org.apache.hadoop.yarn.util.timeline.TimelineUtils;
-import org.junit.AfterClass;
-import org.junit.Assert;
-import org.junit.BeforeClass;
-import org.junit.Test;
+import org.junit.jupiter.api.AfterAll;
+import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 public class TestSystemMetricsPublisherForV2 {
 
@@ -100,7 +103,7 @@ public class TestSystemMetricsPublisherForV2 {
 
   private static RMTimelineCollectorManager rmTimelineCollectorManager;
 
-  @BeforeClass
+  @BeforeAll
   public static void setup() throws Exception {
     if (testRootDir.exists()) {
       //cleanup before hand
@@ -118,6 +121,8 @@ public class TestSystemMetricsPublisherForV2 {
         rmTimelineCollectorManager);
 
     Configuration conf = getTimelineV2Conf();
+    conf.set(YarnConfiguration.RESOURCE_TYPES, "yarn.io/gpu");
+    ResourceUtils.resetResourceTypes(conf);
     conf.setClass(YarnConfiguration.TIMELINE_SERVICE_WRITER_CLASS,
         FileSystemTimelineWriterImpl.class, TimelineWriter.class);
     rmTimelineCollectorManager.init(conf);
@@ -136,7 +141,7 @@ public class TestSystemMetricsPublisherForV2 {
     metricsPublisher.start();
   }
 
-  @AfterClass
+  @AfterAll
   public static void tearDown() throws Exception {
     if (testRootDir.exists()) {
       FileContext.getLocalFSFileContext().delete(
@@ -148,6 +153,7 @@ public class TestSystemMetricsPublisherForV2 {
     if (metricsPublisher != null) {
       metricsPublisher.stop();
     }
+    ResourceUtils.resetResourceTypes(new YarnConfiguration());
   }
 
   private static Configuration getTimelineV2Conf() {
@@ -164,9 +170,7 @@ public class TestSystemMetricsPublisherForV2 {
           testRootDir.getCanonicalPath());
     } catch (IOException e) {
       e.printStackTrace();
-      Assert
-          .fail("Exception while setting the " +
-              "TIMELINE_SERVICE_STORAGE_DIR_ROOT ");
+      fail("Exception while setting the TIMELINE_SERVICE_STORAGE_DIR_ROOT ");
     }
     return conf;
   }
@@ -181,9 +185,8 @@ public class TestSystemMetricsPublisherForV2 {
       conf.setBoolean(YarnConfiguration.RM_PUBLISH_CONTAINER_EVENTS_ENABLED,
           YarnConfiguration.DEFAULT_RM_PUBLISH_CONTAINER_EVENTS_ENABLED);
       publisher.init(conf);
-      assertFalse(
-          "Default configuration should not publish container events from RM",
-          publisher.isPublishContainerEvents());
+      assertFalse(publisher.isPublishContainerEvents(),
+          "Default configuration should not publish container events from RM");
 
       publisher.stop();
 
@@ -191,18 +194,19 @@ public class TestSystemMetricsPublisherForV2 {
           mock(RMTimelineCollectorManager.class));
       conf = getTimelineV2Conf();
       publisher.init(conf);
-      assertTrue("Expected to have registered event handlers and set ready to "
-          + "publish events after init",
-          publisher.isPublishContainerEvents());
+      assertTrue(publisher.isPublishContainerEvents(),
+          "Expected to have registered event handlers and set ready to "
+          + "publish events after init");
       publisher.start();
-      assertTrue("Expected to publish container events from RM",
-          publisher.isPublishContainerEvents());
+      assertTrue(publisher.isPublishContainerEvents(),
+          "Expected to publish container events from RM");
     } finally {
       publisher.stop();
     }
   }
 
-  @Test(timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testPublishApplicationMetrics() throws Exception {
     ApplicationId appId = ApplicationId.newInstance(0, 1);
     RMApp app = createAppAndRegister(appId);
@@ -218,19 +222,20 @@ public class TestSystemMetricsPublisherForV2 {
             + "/";
 
     File entityFolder = new File(outputDirApp);
-    Assert.assertTrue(entityFolder.isDirectory());
+    assertTrue(entityFolder.isDirectory());
 
     // file name is <entityId>.thist
     String timelineServiceFileName =
         appId.toString()
             + FileSystemTimelineWriterImpl.TIMELINE_SERVICE_STORAGE_EXTENSION;
     File appFile = new File(outputDirApp, timelineServiceFileName);
-    Assert.assertTrue(appFile.exists());
+    assertTrue(appFile.exists());
     verifyEntity(
         appFile, 4, ApplicationMetricsConstants.CREATED_EVENT_TYPE, 8, 0);
   }
 
-  @Test(timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testPublishAppAttemptMetrics() throws Exception {
     ApplicationId appId = ApplicationId.newInstance(0, 1);
     RMApp app = rmAppsMapInContext.get(appId);
@@ -253,19 +258,20 @@ public class TestSystemMetricsPublisherForV2 {
             + TimelineEntityType.YARN_APPLICATION_ATTEMPT + "/";
 
     File entityFolder = new File(outputDirApp);
-    Assert.assertTrue(entityFolder.isDirectory());
+    assertTrue(entityFolder.isDirectory());
 
     // file name is <entityId>.thist
     String timelineServiceFileName =
         appAttemptId.toString()
             + FileSystemTimelineWriterImpl.TIMELINE_SERVICE_STORAGE_EXTENSION;
     File appFile = new File(outputDirApp, timelineServiceFileName);
-    Assert.assertTrue(appFile.exists());
+    assertTrue(appFile.exists());
     verifyEntity(appFile, 2, AppAttemptMetricsConstants.REGISTERED_EVENT_TYPE,
         0, TimelineServiceHelper.invertLong(appAttemptId.getAttemptId()));
   }
 
-  @Test(timeout = 10000)
+  @Test
+  @Timeout(value = 10)
   public void testPublishContainerMetrics() throws Exception {
     ApplicationId appId = ApplicationId.newInstance(0, 1);
     RMApp app = rmAppsMapInContext.get(appId);
@@ -285,20 +291,50 @@ public class TestSystemMetricsPublisherForV2 {
             + TimelineEntityType.YARN_CONTAINER + "/";
 
     File entityFolder = new File(outputDirApp);
-    Assert.assertTrue(entityFolder.isDirectory());
+    assertTrue(entityFolder.isDirectory());
 
     // file name is <entityId>.thist
     String timelineServiceFileName =
         containerId.toString()
             + FileSystemTimelineWriterImpl.TIMELINE_SERVICE_STORAGE_EXTENSION;
     File appFile = new File(outputDirApp, timelineServiceFileName);
-    Assert.assertTrue(appFile.exists());
+    assertTrue(appFile.exists());
     verifyEntity(appFile, 2,
         ContainerMetricsConstants.CREATED_IN_RM_EVENT_TYPE, 0,
         TimelineServiceHelper.invertLong(containerId.getContainerId()));
   }
 
-  @Test(timeout = 10000)
+  @Test
+  @Timeout(value = 10)
+  public void testPublishContainerWithoutCustomResources() throws Exception {
+    ApplicationId appId = ApplicationId.newInstance(0, 2);
+    RMApp app = createAppAndRegister(appId);
+    ContainerId containerId = ContainerId.newContainerId(
+        ApplicationAttemptId.newInstance(appId, 1), 1);
+    RMContainer container = createRMContainer(containerId);
+    try {
+      when(container.getAllocatedResource()).thenReturn(Resource.newInstance(-1, -1));
+      metricsPublisher.containerCreated(container, container.getCreationTime());
+      dispatcher.await();
+      File entityFile = new File(getTimelineEntityDir(app) + "/"
+          + TimelineEntityType.YARN_CONTAINER + "/" + containerId
+          + FileSystemTimelineWriterImpl.TIMELINE_SERVICE_STORAGE_EXTENSION);
+      assertTrue(entityFile.exists());
+      try (BufferedReader reader = new BufferedReader(new FileReader(entityFile))) {
+        TimelineEntity entity = FileSystemTimelineReaderImpl
+            .getTimelineRecordFromJSON(reader.readLine(), TimelineEntity.class);
+        assertFalse(entity.getInfo().containsKey(
+            ContainerMetricsConstants.ALLOCATED_RESOURCES_INFO));
+      }
+    } finally {
+      YarnConfiguration resourceConf = new YarnConfiguration();
+      resourceConf.set(YarnConfiguration.RESOURCE_TYPES, "yarn.io/gpu");
+      ResourceUtils.resetResourceTypes(resourceConf);
+    }
+  }
+
+  @Test
+  @Timeout(value = 10)
   public void testPutEntityWhenNoCollector() throws Exception {
     // Validating the logs as DrainDispatcher won't throw exception
     class TestAppender extends AppenderSkeleton {
@@ -332,8 +368,8 @@ public class TestSystemMetricsPublisherForV2 {
       metricsPublisher.appCreated(app, app.getStartTime());
       dispatcher.await();
       for (LoggingEvent event : appender.getLog()) {
-        assertFalse("Dispatcher Crashed",
-            event.getRenderedMessage().contains("Error in dispatcher thread"));
+        assertFalse(event.getRenderedMessage().
+            contains("Error in dispatcher thread"), "Dispatcher Crashed");
       }
     } finally {
       logger.removeAppender(appender);
@@ -368,6 +404,16 @@ public class TestSystemMetricsPublisherForV2 {
           for (TimelineEvent event : entity.getEvents()) {
             if (event.getId().equals(eventForCreatedTime)) {
               assertTrue(entity.getCreatedTime() > 0);
+              if (eventForCreatedTime.equals(
+                  ContainerMetricsConstants.CREATED_IN_RM_EVENT_TYPE)) {
+                Map<?, ?> allocations = (Map<?, ?>) entity.getInfo().get(
+                    ContainerMetricsConstants.ALLOCATED_RESOURCES_INFO);
+                assertEquals(2, ((Number) ((Map<?, ?>) allocations
+                    .get("yarn.io/gpu")).get("value")).longValue());
+                assertEquals(2, TimelineEntityV2Converter
+                    .convertToContainerReport(entity, null, null)
+                    .getAllocatedResource().getResourceValue("yarn.io/gpu"));
+              }
               break;
             }
           }
@@ -377,10 +423,10 @@ public class TestSystemMetricsPublisherForV2 {
     } finally {
       reader.close();
     }
-    assertEquals("Expected " + expectedEvents + " events to be published",
-        expectedEvents, count);
-    assertEquals("Expected " + expectedMetrics + " metrics is incorrect",
-        expectedMetrics, metricsCount);
+    assertEquals(expectedEvents, count,
+        "Expected " + expectedEvents + " events to be published");
+    assertEquals(expectedMetrics, metricsCount,
+        "Expected " + expectedMetrics + " metrics is incorrect");
   }
 
   private String getTimelineEntityDir(RMApp app) {
@@ -469,8 +515,9 @@ public class TestSystemMetricsPublisherForV2 {
     when(container.getContainerId()).thenReturn(containerId);
     when(container.getAllocatedNode()).thenReturn(
         NodeId.newInstance("test host", -100));
-    when(container.getAllocatedResource()).thenReturn(
-        Resource.newInstance(-1, -1));
+    Resource allocated = Resource.newInstance(-1, -1);
+    allocated.setResourceValue("yarn.io/gpu", 2);
+    when(container.getAllocatedResource()).thenReturn(allocated);
     when(container.getAllocatedPriority()).thenReturn(Priority.UNDEFINED);
     when(container.getCreationTime()).thenReturn(Integer.MAX_VALUE + 1L);
     when(container.getFinishTime()).thenReturn(Integer.MAX_VALUE + 2L);

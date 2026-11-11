@@ -35,6 +35,7 @@ import java.util.ServiceLoader;
 import java.util.concurrent.TimeUnit;
 
 import javax.annotation.Nullable;
+import javax.naming.ConfigurationException;
 import javax.security.auth.kerberos.KerberosPrincipal;
 import javax.security.auth.kerberos.KerberosTicket;
 
@@ -50,9 +51,15 @@ import org.apache.hadoop.net.NetUtils;
 import org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenInfo;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheBuilder;
+import org.apache.hadoop.thirdparty.com.google.common.cache.CacheLoader;
+import org.apache.hadoop.thirdparty.com.google.common.cache.LoadingCache;
+import org.apache.hadoop.util.ExitUtil;
 import org.apache.hadoop.util.StopWatch;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.ZKUtil;
+import org.apache.zookeeper.client.ZKClientConfig;
+import org.apache.zookeeper.common.ClientX509Util;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.xbill.DNS.Name;
@@ -87,6 +94,7 @@ public final class SecurityUtil {
 
   private static boolean logSlowLookups;
   private static int slowLookupThresholdMs;
+  private static long cachingInterval = 0;
 
   static {
     setConfigurationInternal(new Configuration());
@@ -103,6 +111,10 @@ public final class SecurityUtil {
     boolean useIp = conf.getBoolean(
         CommonConfigurationKeys.HADOOP_SECURITY_TOKEN_SERVICE_USE_IP,
         CommonConfigurationKeys.HADOOP_SECURITY_TOKEN_SERVICE_USE_IP_DEFAULT);
+    cachingInterval = conf.getTimeDuration(
+        CommonConfigurationKeys.HADOOP_SECURITY_HOSTNAME_CACHE_EXPIRE_INTERVAL_SECONDS,
+        CommonConfigurationKeys.HADOOP_SECURITY_HOSTNAME_CACHE_EXPIRE_INTERVAL_SECONDS_DEFAULT,
+        TimeUnit.SECONDS);
     setTokenServiceUseIp(useIp);
 
     logSlowLookups = conf.getBoolean(
@@ -136,8 +148,8 @@ public final class SecurityUtil {
     }
     useIpForTokenService = flag;
     hostResolver = !useIpForTokenService
-        ? new QualifiedHostResolver()
-        : new StandardHostResolver();
+        ? new QualifiedHostResolver(cachingInterval)
+        : new StandardHostResolver(cachingInterval);
   }
   
   /**
@@ -169,8 +181,9 @@ public final class SecurityUtil {
   /**
    * Convert Kerberos principal name pattern to valid Kerberos principal
    * names. It replaces hostname pattern with hostname, which should be
-   * fully-qualified domain name. If hostname is null or "0.0.0.0", it uses
-   * dynamically looked-up fqdn of the current host instead.
+   * fully-qualified domain name. If hostname is null or a wildcard address
+   * such as "0.0.0.0", "::" or "[::]", it uses dynamically looked-up fqdn of the
+   * current host instead.
    * 
    * @param principalConfig
    *          the Kerberos principal name conf value to convert
@@ -232,11 +245,23 @@ public final class SecurityUtil {
   private static String replacePattern(String[] components, String hostname)
       throws IOException {
     String fqdn = hostname;
-    if (fqdn == null || fqdn.isEmpty() || fqdn.equals("0.0.0.0")) {
+    if (fqdn == null || fqdn.isEmpty() || isWildcardAddress(fqdn)) {
       fqdn = getLocalHostName(null);
     }
     return components[0] + "/" +
         StringUtils.toLowerCase(fqdn) + "@" + components[2];
+  }
+
+  /**
+   * Checks whether a host is the IPv4 or IPv6 wildcard address, in any
+   * spelling and with or without the brackets used around IPv6 literals.
+   */
+  private static boolean isWildcardAddress(String host) {
+    String address = host.startsWith("[") && host.endsWith("]")
+        ? host.substring(1, host.length() - 1) : host;
+    // A scoped address is never the wildcard, and parsing it can fail.
+    return address.indexOf('%') < 0 && InetAddresses.isInetAddress(address)
+        && InetAddresses.forString(address).isAnyLocalAddress();
   }
 
   /**
@@ -314,7 +339,8 @@ public final class SecurityUtil {
     
     String keytabFilename = conf.get(keytabFileKey);
     if (keytabFilename == null || keytabFilename.length() == 0) {
-      throw new IOException("Running in secure mode, but config doesn't have a keytab");
+      throw new IOException(
+          "Running in secure mode, but config doesn't have a keytab for key: " + keytabFileKey);
     }
 
     String principalConfig = conf.get(userNameKey, System
@@ -468,7 +494,7 @@ public final class SecurityUtil {
    *          hadoop.security.token.service.use_ip
    */
   public static Text buildTokenService(InetSocketAddress addr) {
-    String host = null;
+    String host;
     if (useIpForTokenService) {
       if (addr.isUnresolved()) { // host has no ip address
         throw new IllegalArgumentException(
@@ -479,7 +505,7 @@ public final class SecurityUtil {
     } else {
       host = StringUtils.toLowerCase(addr.getHostName());
     }
-    return new Text(host + ":" + addr.getPort());
+    return new Text(NetUtils.getHostPortString(host, addr.getPort()));
   }
 
   /**
@@ -495,21 +521,22 @@ public final class SecurityUtil {
   /**
    * Perform the given action as the daemon's login user. If the login
    * user cannot be determined, this will log a FATAL error and exit
-   * the whole JVM.
+   * the whole JVM via {@link ExitUtil#terminate(int, Throwable)}.
    *
    * @param action action.
    * @param <T> generic type T.
    * @return generic type T.
    */
-  public static <T> T doAsLoginUserOrFatal(PrivilegedAction<T> action) { 
+  public static <T> T doAsLoginUserOrFatal(PrivilegedAction<T> action) {
     if (UserGroupInformation.isSecurityEnabled()) {
-      UserGroupInformation ugi = null;
-      try { 
+      UserGroupInformation ugi;
+      try {
         ugi = UserGroupInformation.getLoginUser();
       } catch (IOException e) {
         LOG.error("Exception while getting login user", e);
-        e.printStackTrace();
-        Runtime.getRuntime().exit(-1);
+        ExitUtil.terminate(-1, e);
+        // Not reached: terminate() either exits the JVM or throws.
+        throw new IllegalStateException(e);
       }
       return ugi.doAs(action);
     } else {
@@ -582,17 +609,65 @@ public final class SecurityUtil {
       return hostResolver.getByName(hostname);
     }
   }
-  
+
   interface HostResolver {
-    InetAddress getByName(String host) throws UnknownHostException;    
+    InetAddress getByName(String host) throws UnknownHostException;
   }
-  
+
+  static abstract class CacheableHostResolver implements HostResolver {
+    private volatile LoadingCache<String, InetAddress> cache;
+
+    CacheableHostResolver(long expiryIntervalSecs) {
+      if (expiryIntervalSecs > 0) {
+        cache = CacheBuilder.newBuilder()
+            .expireAfterWrite(expiryIntervalSecs, TimeUnit.SECONDS)
+            .build(new CacheLoader<String, InetAddress>() {
+              @Override
+              public InetAddress load(String key) throws Exception {
+                return resolve(key);
+              }
+            });
+      }
+    }
+    protected abstract InetAddress resolve(String host) throws UnknownHostException;
+
+    @Override
+    public InetAddress getByName(String host) throws UnknownHostException {
+      // IP literals need no lookup, and a shared cached InetAddress would leak
+      // one caller's getHostName() reverse lookup into every other caller.
+      if (cache != null && !InetAddresses.isInetAddress(host)
+          && !InetAddresses.isUriInetAddress(host)) {
+        try {
+          return cache.get(host);
+        } catch (Exception e) {
+          Throwable cause = e.getCause();
+          if (cause instanceof UnknownHostException) {
+            throw (UnknownHostException) cause;
+          }
+          String message = (cause != null ? cause.getMessage() : "Unknown error");
+          throw new UnknownHostException("Error resolving host " + host + ": " + message);
+        }
+      } else {
+        return resolve(host);
+      }
+    }
+
+    @VisibleForTesting
+    public LoadingCache<String, InetAddress> getCache() {
+      return cache;
+    }
+  }
   /**
    * Uses standard java host resolution
    */
-  static class StandardHostResolver implements HostResolver {
+  static class StandardHostResolver extends CacheableHostResolver {
+
+    StandardHostResolver(long expiryIntervalSecs) {
+      super(expiryIntervalSecs);
+    }
+
     @Override
-    public InetAddress getByName(String host) throws UnknownHostException {
+    public InetAddress resolve(String host) throws UnknownHostException {
       return InetAddress.getByName(host);
     }
   }
@@ -619,7 +694,7 @@ public final class SecurityUtil {
    * NOTE: this resolver is only used if:
    *       hadoop.security.token.service.use_ip=false 
    */
-  protected static class QualifiedHostResolver implements HostResolver {
+  protected static class QualifiedHostResolver extends CacheableHostResolver {
     private List<String> searchDomains = new ArrayList<>();
     {
       ResolverConfig resolverConfig = ResolverConfig.getCurrentConfig();
@@ -628,6 +703,13 @@ public final class SecurityUtil {
       }
     }
 
+    QualifiedHostResolver() {
+      this(0);
+    }
+
+    QualifiedHostResolver(long expiryIntervalSecs) {
+      super(expiryIntervalSecs);
+    }
     /**
      * Create an InetAddress with a fully qualified hostname of the given
      * hostname.  InetAddress does not qualify an incomplete hostname that
@@ -641,8 +723,13 @@ public final class SecurityUtil {
      * @throws UnknownHostException if host does not exist
      */
     @Override
-    public InetAddress getByName(String host) throws UnknownHostException {
+    public InetAddress resolve(String host) throws UnknownHostException {
       InetAddress addr = null;
+
+      // URI.getHost() returns IPv6 literals in brackets, ex. "[::1]"
+      if (host.startsWith("[") && InetAddresses.isUriInetAddress(host)) {
+        host = host.substring(1, host.length() - 1);
+      }
 
       if (InetAddresses.isInetAddress(host)) {
         // valid ip address. use it as-is
@@ -783,6 +870,105 @@ public final class SecurityUtil {
     } catch (IOException | ZKUtil.BadAuthFormatException e) {
       LOG.error("Couldn't read Auth based on {}", configKey);
       throw e;
+    }
+  }
+
+  public static void validateSslConfiguration(TruststoreKeystore truststoreKeystore)
+          throws ConfigurationException {
+    if (org.apache.commons.lang3.StringUtils.isEmpty(truststoreKeystore.keystoreLocation)) {
+      throw new ConfigurationException(
+          "The keystore location parameter is empty for the ZooKeeper client connection.");
+    }
+    if (org.apache.commons.lang3.StringUtils.isEmpty(truststoreKeystore.keystorePassword)) {
+      throw new ConfigurationException(
+          "The keystore password parameter is empty for the ZooKeeper client connection.");
+    }
+    if (org.apache.commons.lang3.StringUtils.isEmpty(truststoreKeystore.truststoreLocation)) {
+      throw new ConfigurationException(
+          "The truststore location parameter is empty for the ZooKeeper client connection.");
+    }
+    if (org.apache.commons.lang3.StringUtils.isEmpty(truststoreKeystore.truststorePassword)) {
+      throw new ConfigurationException(
+          "The truststore password parameter is empty for the ZooKeeper client connection.");
+    }
+  }
+
+  /**
+   * Configure ZooKeeper Client with SSL/TLS connection.
+   * @param zkClientConfig ZooKeeper Client configuration
+   * @param truststoreKeystore truststore keystore, that we use to set the SSL configurations
+   * @throws ConfigurationException if the SSL configs are empty
+   */
+  public static void setSslConfiguration(ZKClientConfig zkClientConfig,
+                                         TruststoreKeystore truststoreKeystore)
+          throws ConfigurationException {
+    setSslConfiguration(zkClientConfig, truststoreKeystore, new ClientX509Util());
+  }
+
+  public static void setSslConfiguration(ZKClientConfig zkClientConfig,
+                                         TruststoreKeystore truststoreKeystore,
+                                         ClientX509Util x509Util)
+          throws ConfigurationException {
+    validateSslConfiguration(truststoreKeystore);
+    LOG.info("Configuring the ZooKeeper client to use SSL/TLS encryption for connecting to the "
+        + "ZooKeeper server.");
+    LOG.debug("Configuring the ZooKeeper client with {} location: {}.",
+        truststoreKeystore.keystoreLocation,
+        CommonConfigurationKeys.ZK_SSL_KEYSTORE_LOCATION);
+    LOG.debug("Configuring the ZooKeeper client with {} location: {}.",
+        truststoreKeystore.truststoreLocation,
+        CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_LOCATION);
+
+    zkClientConfig.setProperty(ZKClientConfig.SECURE_CLIENT, "true");
+    zkClientConfig.setProperty(ZKClientConfig.ZOOKEEPER_CLIENT_CNXN_SOCKET,
+        "org.apache.zookeeper.ClientCnxnSocketNetty");
+    zkClientConfig.setProperty(x509Util.getSslKeystoreLocationProperty(),
+        truststoreKeystore.keystoreLocation);
+    zkClientConfig.setProperty(x509Util.getSslKeystorePasswdProperty(),
+        truststoreKeystore.keystorePassword);
+    zkClientConfig.setProperty(x509Util.getSslTruststoreLocationProperty(),
+        truststoreKeystore.truststoreLocation);
+    zkClientConfig.setProperty(x509Util.getSslTruststorePasswdProperty(),
+        truststoreKeystore.truststorePassword);
+  }
+
+  /**
+   * Helper class to contain the Truststore/Keystore paths for the ZK client connection over
+   * SSL/TLS.
+   */
+  public static class TruststoreKeystore {
+    private final String keystoreLocation;
+    private final String keystorePassword;
+    private final String truststoreLocation;
+    private final String truststorePassword;
+
+    /**
+     * Configuration for the ZooKeeper connection when SSL/TLS is enabled.
+     * When a value is not configured, ensure that empty string is set instead of null.
+     *
+     * @param conf ZooKeeper Client configuration
+     */
+    public TruststoreKeystore(Configuration conf) {
+      keystoreLocation = conf.get(CommonConfigurationKeys.ZK_SSL_KEYSTORE_LOCATION, "");
+      keystorePassword = conf.get(CommonConfigurationKeys.ZK_SSL_KEYSTORE_PASSWORD, "");
+      truststoreLocation = conf.get(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_LOCATION, "");
+      truststorePassword = conf.get(CommonConfigurationKeys.ZK_SSL_TRUSTSTORE_PASSWORD, "");
+    }
+
+    public String getKeystoreLocation() {
+      return keystoreLocation;
+    }
+
+    public String getKeystorePassword() {
+      return keystorePassword;
+    }
+
+    public String getTruststoreLocation() {
+      return truststoreLocation;
+    }
+
+    public String getTruststorePassword() {
+      return truststorePassword;
     }
   }
 }

@@ -31,6 +31,7 @@ import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.crypto.SecretKey;
 import javax.net.ssl.HttpsURLConnection;
@@ -91,7 +92,7 @@ public class Fetcher<K, V> extends Thread {
   protected final ShuffleClientMetrics metrics;
   protected final ExceptionReporter exceptionReporter;
   protected final int id;
-  private static int nextId = 0;
+  private static final AtomicInteger NEXT_ID = new AtomicInteger(0);
   protected final int reduce;
   
   private final int connectionTimeout;
@@ -118,7 +119,7 @@ public class Fetcher<K, V> extends Thread {
                  Reporter reporter, ShuffleClientMetrics metrics,
                  ExceptionReporter exceptionReporter, SecretKey shuffleKey) {
     this(job, reduceId, scheduler, merger, reporter, metrics,
-        exceptionReporter, shuffleKey, ++nextId);
+        exceptionReporter, shuffleKey, NEXT_ID.incrementAndGet());
   }
 
   @VisibleForTesting
@@ -677,7 +678,7 @@ public class Fetcher<K, V> extends Thread {
   private URL getMapOutputURL(MapHost host, Collection<TaskAttemptID> maps
                               )  throws MalformedURLException {
     // Get the base url
-    StringBuffer url = new StringBuffer(host.getBaseUrl());
+    StringBuilder url = new StringBuilder(host.getBaseUrl());
     
     boolean first = true;
     for (TaskAttemptID mapId : maps) {
@@ -687,8 +688,10 @@ public class Fetcher<K, V> extends Thread {
       url.append(mapId);
       first = false;
     }
-   
-    LOG.debug("MapOutput URL for " + host + " -> " + url.toString());
+
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("MapOutput URL for " + host + " -> " + url.toString());
+    }
     return new URL(url.toString());
   }
   

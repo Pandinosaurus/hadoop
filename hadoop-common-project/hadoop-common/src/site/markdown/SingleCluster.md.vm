@@ -35,6 +35,8 @@ These instructions do not cover integration with any Kerberos services,
 -everyone bringing up a production cluster should include connecting to their
 organisation's Kerberos infrastructure as a key part of the deployment.
 
+See [Security](./SecureMode.html) for details on how to secure a cluster.
+
 Prerequisites
 -------------
 
@@ -155,8 +157,7 @@ The following instructions are to run a MapReduce job locally. If you want to ex
 
 4.  Make the HDFS directories required to execute MapReduce jobs:
 
-          $ bin/hdfs dfs -mkdir /user
-          $ bin/hdfs dfs -mkdir /user/<username>
+          $ bin/hdfs dfs -mkdir -p /user/<username>
 
 5.  Copy the input files into the distributed filesystem:
 
@@ -235,3 +236,9 @@ Fully-Distributed Operation
 ---------------------------
 
 For information on setting up fully-distributed, non-trivial clusters see [Cluster Setup](./ClusterSetup.html).
+
+Hadoop in Docker containers
+---------------------------
+
+For information on setting up hadoop in docker, using either official releases or the main source code,
+check [Hadoop Docker](./HadoopDocker.html).

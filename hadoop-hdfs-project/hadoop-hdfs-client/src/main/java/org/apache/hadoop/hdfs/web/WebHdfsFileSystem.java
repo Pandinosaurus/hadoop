@@ -31,7 +31,6 @@ import java.io.EOFException;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
-import java.lang.reflect.InvocationTargetException;
 import java.net.HttpURLConnection;
 import java.net.InetSocketAddress;
 import java.net.MalformedURLException;
@@ -46,13 +45,13 @@ import java.util.Collection;
 import java.util.EnumSet;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.StringTokenizer;
 import java.util.concurrent.TimeUnit;
 
-import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 
 import org.apache.commons.io.IOUtils;
@@ -72,6 +71,7 @@ import org.apache.hadoop.fs.FileEncryptionInfo;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FsServerDefaults;
+import org.apache.hadoop.fs.FsStatus;
 import org.apache.hadoop.fs.GlobalStorageStatistics;
 import org.apache.hadoop.fs.GlobalStorageStatistics.StorageStatisticsProvider;
 import org.apache.hadoop.fs.MultipartUploaderBuilder;
@@ -99,6 +99,7 @@ import org.apache.hadoop.hdfs.client.HdfsClientConfigKeys;
 import org.apache.hadoop.hdfs.protocol.BlockStoragePolicy;
 import org.apache.hadoop.hdfs.protocol.DirectoryListing;
 import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicy;
+import org.apache.hadoop.hdfs.protocol.ErasureCodingPolicyInfo;
 import org.apache.hadoop.hdfs.protocol.HdfsConstants;
 import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.protocol.SnapshotDiffReport;
@@ -126,6 +127,7 @@ import org.apache.hadoop.security.token.TokenIdentifier;
 import org.apache.hadoop.security.token.TokenSelector;
 import org.apache.hadoop.security.token.delegation.AbstractDelegationTokenSelector;
 import org.apache.hadoop.security.token.DelegationTokenIssuer;
+import org.apache.hadoop.thirdparty.com.google.common.net.HttpHeaders;
 import org.apache.hadoop.util.JsonSerialization;
 import org.apache.hadoop.util.KMSUtil;
 import org.apache.hadoop.util.Lists;
@@ -135,7 +137,6 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import org.apache.hadoop.classification.VisibleForTesting;
-import org.apache.hadoop.thirdparty.com.google.common.base.Charsets;
 import org.apache.hadoop.util.Preconditions;
 
 /** A FileSystem for HDFS over the web. */
@@ -598,7 +599,9 @@ public class WebHdfsFileSystem extends FileSystem
     InetSocketAddress nnAddr = getCurrentNNAddr();
     final URL url = new URL(getTransportScheme(), nnAddr.getHostName(),
         nnAddr.getPort(), path + '?' + query);
-    LOG.trace("url={}", url);
+    if (LOG.isTraceEnabled()) {
+      LOG.trace("url={}", getMaskedUrlForLog(url));
+    }
     return url;
   }
 
@@ -640,7 +643,9 @@ public class WebHdfsFileSystem extends FileSystem
         + Param.toSortedString("&", getAuthParameters(op))
         + Param.toSortedString("&", parameters);
     final URL url = getNamenodeURL(path, query);
-    LOG.trace("url={}", url);
+    if (LOG.isTraceEnabled()) {
+      LOG.trace("url={}", getMaskedUrlForLog(url));
+    }
     return url;
   }
 
@@ -844,16 +849,7 @@ public class WebHdfsFileSystem extends FileSystem
           if (node == null) {
             node = url.getAuthority();
           }
-          try {
-            IOException newIoe = ioe.getClass().getConstructor(String.class)
-                .newInstance(node + ": " + ioe.getMessage());
-            newIoe.initCause(ioe.getCause());
-            newIoe.setStackTrace(ioe.getStackTrace());
-            ioe = newIoe;
-          } catch (NoSuchMethodException | SecurityException 
-                   | InstantiationException | IllegalAccessException
-                   | IllegalArgumentException | InvocationTargetException e) {
-          }
+          ioe = NetUtils.addNodeNameToIOException(ioe, node);
           shouldRetry(ioe, retry);
         }
       }
@@ -1695,6 +1691,52 @@ public class WebHdfsFileSystem extends FileSystem
   }
 
   private static final String OFFSET_PARAM_PREFIX = OffsetParam.NAME + "=";
+  private static final String LOG_MASKED_PARAM_VALUE = "XXXXX";
+  private static final String[] LOG_MASKED_PARAM_PREFIXES = {
+      DelegationParam.NAME + "=",
+      TokenArgumentParam.NAME + "="
+  };
+
+  @VisibleForTesting
+  static String getMaskedUrlForLog(final URL url) {
+    final String query = url.getQuery();
+    if (query == null) {
+      return url.toString();
+    }
+    final String lower = query.toLowerCase(Locale.ROOT);
+    boolean mask = false;
+    for (String prefix : LOG_MASKED_PARAM_PREFIXES) {
+      if (lower.startsWith(prefix) || lower.contains("&" + prefix)) {
+        mask = true;
+        break;
+      }
+    }
+    if (!mask) {
+      return url.toString();
+    }
+
+    final StringBuilder b = new StringBuilder("?");
+    for (final StringTokenizer st = new StringTokenizer(query, "&");
+        st.hasMoreTokens();) {
+      if (b.length() > 1) {
+        b.append('&');
+      }
+      b.append(maskQueryTokenForLog(st.nextToken()));
+    }
+
+    final String urlStr = url.toString();
+    return urlStr.substring(0, urlStr.indexOf('?')) + b;
+  }
+
+  private static String maskQueryTokenForLog(final String token) {
+    final String lower = token.toLowerCase(Locale.ROOT);
+    for (String prefix : LOG_MASKED_PARAM_PREFIXES) {
+      if (lower.startsWith(prefix) && token.length() > prefix.length()) {
+        return token.substring(0, prefix.length()) + LOG_MASKED_PARAM_VALUE;
+      }
+    }
+    return token;
+  }
 
   /** Remove offset parameter, if there is any, from the url */
   static URL removeOffsetParam(final URL url) throws MalformedURLException {
@@ -1702,7 +1744,7 @@ public class WebHdfsFileSystem extends FileSystem
     if (query == null) {
       return url;
     }
-    final String lower = StringUtils.toLowerCase(query);
+    final String lower = query.toLowerCase(Locale.ROOT);
     if (!lower.startsWith(OFFSET_PARAM_PREFIX)
         && !lower.contains("&" + OFFSET_PARAM_PREFIX)) {
       return url;
@@ -1713,7 +1755,7 @@ public class WebHdfsFileSystem extends FileSystem
     for(final StringTokenizer st = new StringTokenizer(query, "&");
         st.hasMoreTokens();) {
       final String token = st.nextToken();
-      if (!StringUtils.toLowerCase(token).startsWith(OFFSET_PARAM_PREFIX)) {
+      if (!token.toLowerCase(Locale.ROOT).startsWith(OFFSET_PARAM_PREFIX)) {
         if (b == null) {
           b = new StringBuilder("?").append(token);
         } else {
@@ -1790,7 +1832,7 @@ public class WebHdfsFileSystem extends FileSystem
     }
     DirectoryListing listing = new FsPathResponseRunner<DirectoryListing>(
         GetOpParam.Op.LISTSTATUS_BATCH,
-        f, new StartAfterParam(new String(prevKey, Charsets.UTF_8))) {
+        f, new StartAfterParam(new String(prevKey, StandardCharsets.UTF_8))) {
       @Override
       DirectoryListing decodeResponse(Map<?, ?> json) throws IOException {
         return JsonUtilClient.toDirectoryListing(json);
@@ -1951,6 +1993,26 @@ public class WebHdfsFileSystem extends FileSystem
       LOG.warn("Cannot find trash root of " + path, e);
       // keep the same behavior with dfs
       return super.getTrashRoot(path).makeQualified(getUri(), null);
+    }
+  }
+
+  public Collection<FileStatus> getTrashRoots(boolean allUsers) {
+    statistics.incrementReadOps(1);
+    storageStatistics.incrementOpCounter(OpType.GET_TRASH_ROOTS);
+
+    final HttpOpParam.Op op = GetOpParam.Op.GETTRASHROOTS;
+    try {
+      Collection<FileStatus> trashRoots =
+          new FsPathResponseRunner<Collection<FileStatus>>(op, null,
+              new AllUsersParam(allUsers)) {
+            @Override
+            Collection<FileStatus> decodeResponse(Map<?, ?> json) throws IOException {
+              return JsonUtilClient.getTrashRoots(json);
+            }
+          }.run();
+      return trashRoots;
+    } catch (IOException e) {
+      return super.getTrashRoots(allUsers);
     }
   }
 
@@ -2143,6 +2205,76 @@ public class WebHdfsFileSystem extends FileSystem
       @Override
       FsServerDefaults decodeResponse(Map<?, ?> json) throws IOException {
         return JsonUtilClient.toFsServerDefaults(json);
+      }
+    }.run();
+  }
+
+  @Override
+  public Path getLinkTarget(Path f) throws IOException {
+    statistics.incrementReadOps(1);
+    storageStatistics.incrementOpCounter(OpType.GET_LINK_TARGET);
+    final HttpOpParam.Op op = GetOpParam.Op.GETLINKTARGET;
+    return new FsPathResponseRunner<Path>(op, f) {
+      @Override
+      Path decodeResponse(Map<?, ?> json) {
+        return new Path((String) json.get(Path.class.getSimpleName()));
+      }
+    }.run();
+  }
+
+  @Override
+  public FileStatus getFileLinkStatus(Path f) throws IOException {
+    statistics.incrementReadOps(1);
+    storageStatistics.incrementOpCounter(OpType.GET_FILE_LINK_STATUS);
+    final HttpOpParam.Op op = GetOpParam.Op.GETFILELINKSTATUS;
+    HdfsFileStatus status =
+        new FsPathResponseRunner<HdfsFileStatus>(op, f) {
+          @Override
+          HdfsFileStatus decodeResponse(Map<?, ?> json) {
+            return JsonUtilClient.toFileStatus(json, true);
+          }
+        }.run();
+    if (status == null) {
+      throw new FileNotFoundException("File does not exist: " + f);
+    }
+    return status.makeQualified(getUri(), f);
+  }
+
+  @Override
+  public FsStatus getStatus(Path path) throws IOException {
+    statistics.incrementReadOps(1);
+    storageStatistics.incrementOpCounter(OpType.GET_STATUS);
+    final GetOpParam.Op op = GetOpParam.Op.GETSTATUS;
+    return new FsPathResponseRunner<FsStatus>(op, path) {
+      @Override
+      FsStatus decodeResponse(Map<?, ?> json) {
+        return JsonUtilClient.toFsStatus(json);
+      }
+    }.run();
+  }
+
+  public Collection<ErasureCodingPolicyInfo> getAllErasureCodingPolicies()
+      throws IOException {
+    statistics.incrementReadOps(1);
+    storageStatistics.incrementOpCounter(OpType.GET_EC_POLICIES);
+    final GetOpParam.Op op = GetOpParam.Op.GETECPOLICIES;
+    return new FsPathResponseRunner<Collection<ErasureCodingPolicyInfo>>(op, null) {
+      @Override
+      Collection<ErasureCodingPolicyInfo> decodeResponse(Map<?, ?> json) {
+        return JsonUtilClient.getAllErasureCodingPolicies(json);
+      }
+    }.run();
+  }
+
+  public Map<String, String> getAllErasureCodingCodecs()
+      throws IOException {
+    statistics.incrementReadOps(1);
+    storageStatistics.incrementOpCounter(OpType.GET_EC_CODECS);
+    final HttpOpParam.Op op = GetOpParam.Op.GETECCODECS;
+    return new FsPathResponseRunner<Map<String, String>>(op, null) {
+      @Override
+      Map<String, String> decodeResponse(Map<?, ?> json) {
+        return JsonUtilClient.getErasureCodeCodecs(json);
       }
     }.run();
   }
@@ -2541,7 +2673,7 @@ public class WebHdfsFileSystem extends FileSystem
       final String cl = conn.getHeaderField(HttpHeaders.CONTENT_LENGTH);
       InputStream inStream = conn.getInputStream();
       if (LOG.isDebugEnabled()) {
-        LOG.debug("open file: " + conn.getURL());
+        LOG.debug("open file: {}", getMaskedUrlForLog(conn.getURL()));
       }
       if (cl != null) {
         long streamLength = Long.parseLong(cl);

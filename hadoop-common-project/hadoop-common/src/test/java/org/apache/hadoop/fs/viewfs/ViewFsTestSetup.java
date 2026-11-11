@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.fs.viewfs;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
@@ -30,8 +32,8 @@ import org.apache.hadoop.fs.FsConstants;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.viewfs.ViewFileSystemOverloadScheme.ChildFsGetter;
 import org.apache.hadoop.util.Shell;
-import org.eclipse.jetty.util.log.Log;
-import org.junit.Assert;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 
 /**
@@ -52,7 +54,9 @@ import org.junit.Assert;
  */
 
 public class ViewFsTestSetup {
-  
+  private static final Logger LOG =
+      LoggerFactory.getLogger(ViewFsTestSetup.class);
+
   static public String ViewFSTestDir = "/testDir";
 
 
@@ -87,7 +91,7 @@ public class ViewFsTestSetup {
     
     FileContext fc = FileContext.getFileContext(FsConstants.VIEWFS_URI, conf);
     fc.setWorkingDirectory(new Path(wdDir)); // in case testdir relative to wd.
-    Log.getLog().info("Working dir is: " + fc.getWorkingDirectory());
+    LOG.info("Working dir is: " + fc.getWorkingDirectory());
     //System.out.println("SRCOfTests = "+ getTestRootPath(fc, "test"));
     //System.out.println("TargetOfTests = "+ targetOfTests.toUri());
     return fc;
@@ -112,12 +116,12 @@ public class ViewFsTestSetup {
     } else { // home dir is at root. Just link the home dir itse
       URI linkTarget = fsTarget.makeQualified(new Path(homeDir)).toUri();
       ConfigUtil.addLink(conf, homeDir, linkTarget);
-      Log.getLog().info("Added link for home dir " + homeDir + "->" + linkTarget);
+      LOG.info("Added link for home dir " + homeDir + "->" + linkTarget);
     }
     // Now set the root of the home dir for viewfs
     String homeDirRoot = fsTarget.getHomeDirectory().getParent().toUri().getPath();
     ConfigUtil.setHomeDirConf(conf, homeDirRoot);
-    Log.getLog().info("Home dir base for viewfs" + homeDirRoot);
+    LOG.info("Home dir base for viewfs" + homeDirRoot);
   }
   
   /*
@@ -133,7 +137,7 @@ public class ViewFsTestSetup {
     String firstComponent = path.substring(0, indexOfEnd);
     URI linkTarget = fsTarget.makeQualified(new Path(firstComponent)).toUri();
     ConfigUtil.addLink(conf, firstComponent, linkTarget);
-    Log.getLog().info("Added link for " + info + " "
+    LOG.info("Added link for " + info + " "
         + firstComponent + "->" + linkTarget);    
   }
 
@@ -164,7 +168,7 @@ public class ViewFsTestSetup {
           out.writeBytes("<property><name>");
           if (isNfly) {
             String[] srcParts = src.split("[.]");
-            Assert.assertEquals("Invalid NFlyLink format", 3, srcParts.length);
+            assertEquals(3, srcParts.length, "Invalid NFlyLink format");
             String actualSrc = srcParts[srcParts.length - 1];
             String params = srcParts[srcParts.length - 2];
             out.writeBytes(prefix + Constants.CONFIG_VIEWFS_LINK_NFLY + "."
@@ -202,7 +206,7 @@ public class ViewFsTestSetup {
       boolean isNfly = src.startsWith(Constants.CONFIG_VIEWFS_LINK_NFLY);
       if (isNfly) {
         String[] srcParts = src.split("[.]");
-        Assert.assertEquals("Invalid NFlyLink format", 3, srcParts.length);
+        assertEquals(3, srcParts.length, "Invalid NFlyLink format");
         String actualSrc = srcParts[srcParts.length - 1];
         String params = srcParts[srcParts.length - 2];
         ConfigUtil.addLinkNfly(config, mountTableName, actualSrc, params,

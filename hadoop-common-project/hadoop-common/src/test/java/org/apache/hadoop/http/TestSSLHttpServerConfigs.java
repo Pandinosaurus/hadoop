@@ -22,15 +22,19 @@ import java.util.function.Supplier;
 import java.io.File;
 import java.io.IOException;
 import java.net.URI;
+import java.util.Arrays;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
 import org.apache.hadoop.security.ssl.SSLFactory;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.After;
-import org.junit.Assert;
-import org.junit.Before;
-import org.junit.Test;
+import org.eclipse.jetty.server.ServerConnector;
+import org.eclipse.jetty.server.SslConnectionFactory;
+import org.eclipse.jetty.util.ssl.SslContextFactory;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 
 import static org.apache.hadoop.http.TestSSLHttpServer.EXCLUDED_CIPHERS;
 import static org.apache.hadoop.http.TestSSLHttpServer.INCLUDED_PROTOCOLS;
@@ -39,6 +43,10 @@ import static org.apache.hadoop.http.TestSSLHttpServer.SSL_SERVER_TRUSTSTORE_PRO
 import static org.apache.hadoop.security.ssl.KeyStoreTestUtil.CLIENT_KEY_STORE_PASSWORD_DEFAULT;
 import static org.apache.hadoop.security.ssl.KeyStoreTestUtil.SERVER_KEY_STORE_PASSWORD_DEFAULT;
 import static org.apache.hadoop.security.ssl.KeyStoreTestUtil.TRUST_STORE_PASSWORD_DEFAULT;
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.fail;
 
 /**
  * Test suit for testing KeyStore and TrustStore password settings.
@@ -56,7 +64,7 @@ public class TestSSLHttpServerConfigs {
   private static final String CLIENT_PWD = CLIENT_KEY_STORE_PASSWORD_DEFAULT;
   private static final String TRUST_STORE_PWD = TRUST_STORE_PASSWORD_DEFAULT;
 
-  @Before
+  @BeforeEach
   public void start() throws Exception {
     TestSSLHttpServer.turnOnSSLDebugLogging();
     TestSSLHttpServer.storeHttpsCipherSuites();
@@ -71,7 +79,7 @@ public class TestSSLHttpServerConfigs {
     sslConfDir = KeyStoreTestUtil.getClasspathDir(TestSSLHttpServer.class);
   }
 
-  @After
+  @AfterEach
   public void shutdown() throws Exception {
     FileUtil.fullyDelete(new File(BASEDIR));
     KeyStoreTestUtil.cleanupSSLConfig(keystoreDir, sslConfDir);
@@ -109,9 +117,33 @@ public class TestSSLHttpServerConfigs {
             sslConf.get(SSL_SERVER_TRUSTSTORE_PROP_PREFIX + ".location"),
             trustStorePassword,
             sslConf.get(SSL_SERVER_TRUSTSTORE_PROP_PREFIX + ".type", "jks"))
-        .excludeCiphers(sslConf.get("ssl.server.exclude.cipher.list")).build();
+        .excludeCiphers(sslConf.get("ssl.server.exclude.cipher.list"))
+        .includeCiphers(sslConf.get("ssl.server.include.cipher.list"))
+        .build();
 
     return server;
+  }
+
+  private void assertServerAppliesEnabledProtocol(String protocol)
+      throws Exception {
+    HttpServer2 server = setupServer(SERVER_PWD, SERVER_PWD, TRUST_STORE_PWD);
+    try {
+      ServerConnector listener = server.getListeners().get(0);
+      SslConnectionFactory connectionFactory =
+          listener.getConnectionFactory(SslConnectionFactory.class);
+      assertNotNull(connectionFactory,
+          "Expected HTTPS listener with an SSL connection factory");
+      SslContextFactory sslContextFactory =
+          connectionFactory.getSslContextFactory();
+      assertArrayEquals(new String[] {protocol},
+          sslContextFactory.getIncludeProtocols());
+      assertFalse(Arrays.asList(sslContextFactory.getExcludeProtocols())
+              .contains(protocol),
+          "Configured enabled protocol should be removed from excluded "
+              + "protocols");
+    } finally {
+      server.stop();
+    }
   }
 
   /**
@@ -136,38 +168,43 @@ public class TestSSLHttpServerConfigs {
     }
   }
 
-  @Test(timeout=120000)
+  @Test
+  @Timeout(value = 120)
   public void testServerSetup() throws Exception {
     setupKeyStores(SERVER_PWD, CLIENT_PWD, TRUST_STORE_PWD);
     testServerStart(SERVER_PWD, SERVER_PWD, TRUST_STORE_PWD);
   }
 
-  @Test(timeout=120000)
+  @Test
+  @Timeout(value = 120)
   public void testServerSetupWithoutTrustPassword() throws Exception {
     setupKeyStores(SERVER_PWD, CLIENT_PWD, TRUST_STORE_PWD);
     testServerStart(SERVER_PWD, SERVER_PWD, null);
   }
 
-  @Test(timeout=120000)
+  @Test
+  @Timeout(value = 120)
   public void testServerSetupWithoutKeyStorePassword() throws Exception {
     setupKeyStores(SERVER_PWD, CLIENT_PWD, TRUST_STORE_PWD);
     testServerStart(SERVER_PWD, null, null);
   }
 
-  @Test(timeout=120000)
+  @Test
+  @Timeout(value = 120)
   public void testServerSetupWithoutKeyStoreKeyPassword() throws Exception {
     setupKeyStores(SERVER_PWD, CLIENT_PWD, TRUST_STORE_PWD);
     testServerStart(null, SERVER_PWD, null);
   }
 
-  @Test(timeout=120000)
+  @Test
+  @Timeout(value = 120)
   public void testServerSetupWithNoKeyStorePassword() throws Exception {
     setupKeyStores(SERVER_PWD, CLIENT_PWD, TRUST_STORE_PWD);
     // Accessing KeyStore without either of KeyStore.KeyPassword or KeyStore
     // .password should fail.
     try {
       testServerStart(null, null, null);
-      Assert.fail("Server should have failed to start without any " +
+      fail("Server should have failed to start without any " +
           "KeyStore password.");
     } catch (IOException e) {
       GenericTestUtils.assertExceptionContains("Problem starting http server",
@@ -175,14 +212,15 @@ public class TestSSLHttpServerConfigs {
     }
   }
 
-  @Test(timeout=120000)
+  @Test
+  @Timeout(value = 120)
   public void testServerSetupWithWrongKeyStorePassword() throws Exception {
     setupKeyStores(SERVER_PWD, CLIENT_PWD, TRUST_STORE_PWD);
 
     // Accessing KeyStore with wrong keyStore password/ keyPassword should fail.
     try {
       testServerStart(SERVER_PWD, "wrongPassword", null);
-      Assert.fail("Server should have failed to start with wrong " +
+      fail("Server should have failed to start with wrong " +
           "KeyStore password.");
     } catch (IOException e) {
       GenericTestUtils.assertExceptionContains("Keystore was tampered with, " +
@@ -191,7 +229,7 @@ public class TestSSLHttpServerConfigs {
 
     try {
       testServerStart("wrongPassword", SERVER_PWD, null);
-      Assert.fail("Server should have failed to start with wrong " +
+      fail("Server should have failed to start with wrong " +
           "KeyStore password.");
     } catch (IOException e) {
       GenericTestUtils.assertExceptionContains("Problem starting http server",
@@ -201,7 +239,8 @@ public class TestSSLHttpServerConfigs {
     }
   }
 
-  @Test(timeout=120000)
+  @Test
+  @Timeout(value = 120)
   public void testKeyStoreSetupWithoutTrustStorePassword() throws Exception {
     // Setup TrustStore without TrustStore password
     setupKeyStores(SERVER_PWD, CLIENT_PWD, "");
@@ -213,7 +252,7 @@ public class TestSSLHttpServerConfigs {
     // set) should fail.
     try {
       testServerStart(SERVER_PWD, SERVER_PWD, "wrongPassword");
-      Assert.fail("Server should have failed to start with wrong " +
+      fail("Server should have failed to start with wrong " +
           "TrustStore password.");
     } catch (IOException e) {
       GenericTestUtils.assertExceptionContains("Keystore was tampered with, " +
@@ -221,7 +260,8 @@ public class TestSSLHttpServerConfigs {
     }
   }
 
-  @Test(timeout=120000)
+  @Test
+  @Timeout(value = 120)
   public void testKeyStoreSetupWithoutKeyStorePassword() throws Exception {
     // Setup KeyStore without KeyStore password
     setupKeyStores(SERVER_PWD, "", TRUST_STORE_PWD);
@@ -233,7 +273,7 @@ public class TestSSLHttpServerConfigs {
     // set) should fail.
     try {
       testServerStart(SERVER_PWD, "wrongPassword", TRUST_STORE_PWD);
-      Assert.fail("Server should have failed to start with wrong " +
+      fail("Server should have failed to start with wrong " +
           "KeyStore password.");
     } catch (IOException e) {
       GenericTestUtils.assertExceptionContains("Keystore was tampered with, " +
@@ -241,7 +281,8 @@ public class TestSSLHttpServerConfigs {
     }
   }
 
-  @Test(timeout=120000)
+  @Test
+  @Timeout(value = 120)
   public void testKeyStoreSetupWithoutPassword() throws Exception {
     // Setup KeyStore without any password
     setupKeyStores("", "", "");
@@ -254,7 +295,7 @@ public class TestSSLHttpServerConfigs {
 
     try {
       testServerStart(null, null, null);
-      Assert.fail("Server should have failed to start without " +
+      fail("Server should have failed to start without " +
           "KeyStore password.");
     } catch (IOException e) {
       GenericTestUtils.assertExceptionContains("Problem starting http server",
@@ -262,5 +303,32 @@ public class TestSSLHttpServerConfigs {
       GenericTestUtils.assertExceptionContains("Password must not be null",
           e.getCause());
     }
+  }
+
+  @Test
+  @Timeout(value = 120)
+  public void testDefaultEnabledProtocolIsAppliedWhenConfigUnset()
+      throws Exception {
+    setupKeyStores(SERVER_PWD, CLIENT_PWD, TRUST_STORE_PWD);
+    conf.unset(SSLFactory.SSL_ENABLED_PROTOCOLS_KEY);
+    assertServerAppliesEnabledProtocol(SSLFactory.SSL_ENABLED_PROTOCOLS_DEFAULT);
+  }
+
+  @Test
+  @Timeout(value = 120)
+  public void testDefaultEnabledProtocolIsAppliedWhenConfigExplicitlySet()
+      throws Exception {
+    setupKeyStores(SERVER_PWD, CLIENT_PWD, TRUST_STORE_PWD);
+    conf.set(SSLFactory.SSL_ENABLED_PROTOCOLS_KEY,
+        SSLFactory.SSL_ENABLED_PROTOCOLS_DEFAULT);
+    assertServerAppliesEnabledProtocol(SSLFactory.SSL_ENABLED_PROTOCOLS_DEFAULT);
+  }
+
+  @Test
+  @Timeout(value = 120)
+  public void testNonDefaultEnabledProtocolIsApplied() throws Exception {
+    setupKeyStores(SERVER_PWD, CLIENT_PWD, TRUST_STORE_PWD);
+    conf.set(SSLFactory.SSL_ENABLED_PROTOCOLS_KEY, "TLSv1.3");
+    assertServerAppliesEnabledProtocol("TLSv1.3");
   }
 }

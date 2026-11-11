@@ -25,14 +25,16 @@ import org.apache.hadoop.io.retry.UnreliableInterface.FatalException;
 import org.apache.hadoop.io.retry.UnreliableInterface.UnreliableException;
 import org.apache.hadoop.ipc.ProtocolTranslator;
 import org.apache.hadoop.ipc.RemoteException;
+import org.apache.hadoop.ipc.RpcInvocationHandler;
 import org.apache.hadoop.security.AccessControlException;
-import org.junit.Before;
-import org.junit.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
 import org.mockito.invocation.InvocationOnMock;
 import org.mockito.stubbing.Answer;
 
 import java.io.IOException;
 import java.io.InterruptedIOException;
+import java.lang.reflect.Proxy;
 import java.lang.reflect.UndeclaredThrowableException;
 import java.util.Collections;
 import java.util.Map;
@@ -43,7 +45,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import javax.security.sasl.SaslException;
 
 import static org.apache.hadoop.io.retry.RetryPolicies.*;
-import static org.junit.Assert.*;
+import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -62,7 +64,7 @@ public class TestRetryProxy {
   private UnreliableImplementation unreliableImpl;
   private RetryAction caughtRetryAction = null;
   
-  @Before
+  @BeforeEach
   public void setUp() throws Exception {
     unreliableImpl = new UnreliableImplementation();
   }
@@ -394,6 +396,32 @@ public class TestRetryProxy {
       verify(policy, times(1)).shouldRetry(any(Exception.class), anyInt(),
           anyInt(), anyBoolean());
       assertEquals(RetryDecision.FAIL, caughtRetryAction.action);
+    }
+  }
+
+  @Test
+  public void testCallIdClearedWhenNoRpcIsIssued() throws Exception {
+    // A translator over an RPC proxy makes the handler set the call id for the
+    // next RPC; this translator throws before issuing it, so nothing consumes it.
+    final Object rpcProxy = Proxy.newProxyInstance(
+        UnreliableInterface.class.getClassLoader(),
+        new Class<?>[] {UnreliableInterface.class},
+        mock(RpcInvocationHandler.class));
+    class UnreliableTranslator extends UnreliableImplementation
+        implements ProtocolTranslator {
+      @Override
+      public Object getUnderlyingProxyObject() {
+        return rpcProxy;
+      }
+    }
+
+    UnreliableInterface unreliable = (UnreliableInterface) RetryProxy.create(
+        UnreliableInterface.class, new UnreliableTranslator(), TRY_ONCE_THEN_FAIL);
+    // A method that issues no RPC, such as toString, must not leave the call id set either.
+    assertNotNull(unreliable.toString());
+    for (int i = 0; i < 2; i++) {
+      // Without the call id being cleared, these calls fail with IllegalStateException.
+      assertThrows(FatalException.class, unreliable::alwaysFailsWithFatalException);
     }
   }
 }

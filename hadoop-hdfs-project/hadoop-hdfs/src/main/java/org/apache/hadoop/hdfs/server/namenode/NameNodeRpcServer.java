@@ -36,7 +36,10 @@ import static org.apache.hadoop.util.Time.now;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.net.Inet6Address;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
+import java.net.UnknownHostException;
 import java.security.PrivilegedExceptionAction;
 import java.util.Arrays;
 import java.util.Collection;
@@ -54,6 +57,7 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.ReconfigurationTaskStatus;
 import org.apache.hadoop.crypto.CryptoProtocolVersion;
 import org.apache.hadoop.fs.BatchedRemoteIterator.BatchedEntries;
+import org.apache.hadoop.fs.PathIsNotEmptyDirectoryException;
 import org.apache.hadoop.hdfs.AddBlockFlag;
 import org.apache.hadoop.fs.CacheFlag;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
@@ -172,6 +176,7 @@ import org.apache.hadoop.hdfs.server.protocol.DatanodeRegistration;
 import org.apache.hadoop.hdfs.server.protocol.DatanodeStorageReport;
 import org.apache.hadoop.hdfs.server.protocol.FinalizeCommand;
 import org.apache.hadoop.hdfs.server.protocol.HeartbeatResponse;
+import org.apache.hadoop.hdfs.server.protocol.InvalidBlockReportLeaseException;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeCommand;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeProtocols;
 import org.apache.hadoop.hdfs.server.protocol.NamenodeRegistration;
@@ -227,6 +232,7 @@ import org.apache.hadoop.util.VersionUtil;
 import org.slf4j.Logger;
 
 import org.apache.hadoop.classification.VisibleForTesting;
+import org.apache.hadoop.thirdparty.com.google.common.net.InetAddresses;
 import org.apache.hadoop.thirdparty.protobuf.BlockingService;
 import org.apache.hadoop.hdfs.server.protocol.DisallowedDatanodeException;
 
@@ -350,7 +356,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
     if (serviceRpcAddr != null) {
       String bindHost = nn.getServiceRpcServerBindHost(conf);
       if (bindHost == null) {
-        bindHost = serviceRpcAddr.getHostName();
+        bindHost = serviceRpcAddr.getHostString();
       }
       LOG.info("Service RPC server is binding to " + bindHost + ":" +
           serviceRpcAddr.getPort());
@@ -370,30 +376,29 @@ public class NameNodeRpcServer implements NamenodeProtocols {
           .build();
 
       // Add all the RPC protocols that the namenode implements
-      DFSUtil.addPBProtocol(conf, HAServiceProtocolPB.class, haPbService,
+      DFSUtil.addInternalPBProtocol(conf, HAServiceProtocolPB.class, haPbService,
           serviceRpcServer);
-      DFSUtil.addPBProtocol(conf, ReconfigurationProtocolPB.class,
+      DFSUtil.addInternalPBProtocol(conf, ReconfigurationProtocolPB.class,
           reconfigurationPbService, serviceRpcServer);
-      DFSUtil.addPBProtocol(conf, NamenodeProtocolPB.class, NNPbService,
+      DFSUtil.addInternalPBProtocol(conf, NamenodeProtocolPB.class, NNPbService,
           serviceRpcServer);
-      DFSUtil.addPBProtocol(conf, DatanodeProtocolPB.class, dnProtoPbService,
+      DFSUtil.addInternalPBProtocol(conf, DatanodeProtocolPB.class, dnProtoPbService,
           serviceRpcServer);
-      DFSUtil.addPBProtocol(conf, RefreshAuthorizationPolicyProtocolPB.class,
+      DFSUtil.addInternalPBProtocol(conf, RefreshAuthorizationPolicyProtocolPB.class,
           refreshAuthService, serviceRpcServer);
-      DFSUtil.addPBProtocol(conf, RefreshUserMappingsProtocolPB.class, 
+      DFSUtil.addInternalPBProtocol(conf, RefreshUserMappingsProtocolPB.class,
           refreshUserMappingService, serviceRpcServer);
       // We support Refreshing call queue here in case the client RPC queue is full
-      DFSUtil.addPBProtocol(conf, RefreshCallQueueProtocolPB.class,
+      DFSUtil.addInternalPBProtocol(conf, RefreshCallQueueProtocolPB.class,
           refreshCallQueueService, serviceRpcServer);
-      DFSUtil.addPBProtocol(conf, GenericRefreshProtocolPB.class,
+      DFSUtil.addInternalPBProtocol(conf, GenericRefreshProtocolPB.class,
           genericRefreshService, serviceRpcServer);
-      DFSUtil.addPBProtocol(conf, GetUserMappingsProtocolPB.class, 
+      DFSUtil.addInternalPBProtocol(conf, GetUserMappingsProtocolPB.class,
           getUserMappingService, serviceRpcServer);
 
       // Update the address with the correct port
       InetSocketAddress listenAddr = serviceRpcServer.getListenerAddress();
-      serviceRPCAddress = new InetSocketAddress(
-            serviceRpcAddr.getHostName(), listenAddr.getPort());
+      serviceRPCAddress = getAdvertisedAddress(serviceRpcAddr, listenAddr.getPort());
       nn.setRpcServiceServerAddress(conf, serviceRPCAddress);
     } else {
       serviceRpcServer = null;
@@ -406,7 +411,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
           ProtobufRpcEngine2.class);
       String bindHost = nn.getLifelineRpcServerBindHost(conf);
       if (bindHost == null) {
-        bindHost = lifelineRpcAddr.getHostName();
+        bindHost = lifelineRpcAddr.getHostString();
       }
       LOG.info("Lifeline RPC server is binding to {}:{}", bindHost,
           lifelineRpcAddr.getPort());
@@ -430,13 +435,12 @@ public class NameNodeRpcServer implements NamenodeProtocols {
           .setSecretManager(namesystem.getDelegationTokenSecretManager())
           .build();
 
-      DFSUtil.addPBProtocol(conf, DatanodeLifelineProtocolPB.class,
+      DFSUtil.addInternalPBProtocol(conf, DatanodeLifelineProtocolPB.class,
           lifelineProtoPbService, lifelineRpcServer);
 
       // Update the address with the correct port
       InetSocketAddress listenAddr = lifelineRpcServer.getListenerAddress();
-      lifelineRPCAddress = new InetSocketAddress(lifelineRpcAddr.getHostName(),
-          listenAddr.getPort());
+      lifelineRPCAddress = getAdvertisedAddress(lifelineRpcAddr, listenAddr.getPort());
       nn.setRpcLifelineServerAddress(conf, lifelineRPCAddress);
     } else {
       lifelineRpcServer = null;
@@ -446,7 +450,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
     InetSocketAddress rpcAddr = nn.getRpcServerAddress(conf);
     String bindHost = nn.getRpcServerBindHost(conf);
     if (bindHost == null) {
-      bindHost = rpcAddr.getHostName();
+      bindHost = rpcAddr.getHostString();
     }
     LOG.info("RPC server is binding to " + bindHost + ":" + rpcAddr.getPort());
 
@@ -473,23 +477,23 @@ public class NameNodeRpcServer implements NamenodeProtocols {
         .build();
 
     // Add all the RPC protocols that the namenode implements
-    DFSUtil.addPBProtocol(conf, HAServiceProtocolPB.class, haPbService,
+    DFSUtil.addInternalPBProtocol(conf, HAServiceProtocolPB.class, haPbService,
         clientRpcServer);
-    DFSUtil.addPBProtocol(conf, ReconfigurationProtocolPB.class,
+    DFSUtil.addInternalPBProtocol(conf, ReconfigurationProtocolPB.class,
         reconfigurationPbService, clientRpcServer);
-    DFSUtil.addPBProtocol(conf, NamenodeProtocolPB.class, NNPbService,
+    DFSUtil.addInternalPBProtocol(conf, NamenodeProtocolPB.class, NNPbService,
         clientRpcServer);
-    DFSUtil.addPBProtocol(conf, DatanodeProtocolPB.class, dnProtoPbService,
+    DFSUtil.addInternalPBProtocol(conf, DatanodeProtocolPB.class, dnProtoPbService,
         clientRpcServer);
-    DFSUtil.addPBProtocol(conf, RefreshAuthorizationPolicyProtocolPB.class, 
+    DFSUtil.addInternalPBProtocol(conf, RefreshAuthorizationPolicyProtocolPB.class,
         refreshAuthService, clientRpcServer);
-    DFSUtil.addPBProtocol(conf, RefreshUserMappingsProtocolPB.class, 
+    DFSUtil.addInternalPBProtocol(conf, RefreshUserMappingsProtocolPB.class,
         refreshUserMappingService, clientRpcServer);
-    DFSUtil.addPBProtocol(conf, RefreshCallQueueProtocolPB.class,
+    DFSUtil.addInternalPBProtocol(conf, RefreshCallQueueProtocolPB.class,
         refreshCallQueueService, clientRpcServer);
-    DFSUtil.addPBProtocol(conf, GenericRefreshProtocolPB.class,
+    DFSUtil.addInternalPBProtocol(conf, GenericRefreshProtocolPB.class,
         genericRefreshService, clientRpcServer);
-    DFSUtil.addPBProtocol(conf, GetUserMappingsProtocolPB.class, 
+    DFSUtil.addInternalPBProtocol(conf, GetUserMappingsProtocolPB.class,
         getUserMappingService, clientRpcServer);
 
     // set service-level authorization security policy
@@ -507,8 +511,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
 
     // The rpc-server port can be ephemeral... ensure we have the correct info
     InetSocketAddress listenAddr = clientRpcServer.getListenerAddress();
-    clientRpcAddress = new InetSocketAddress(
-        rpcAddr.getHostName(), listenAddr.getPort());
+    clientRpcAddress = getAdvertisedAddress(rpcAddr, listenAddr.getPort());
     nn.setRpcServerAddress(conf, clientRpcAddress);
     
     minimumDataNodeVersion = conf.get(
@@ -540,7 +543,8 @@ public class NameNodeRpcServer implements NamenodeProtocols {
         FSLimitException.PathComponentTooLongException.class,
         FSLimitException.MaxDirectoryItemsExceededException.class,
         DisallowedDatanodeException.class,
-        XAttrNotFoundException.class);
+        XAttrNotFoundException.class,
+        PathIsNotEmptyDirectoryException.class);
 
     clientRpcServer.addSuppressedLoggingExceptions(StandbyException.class,
         UnresolvedPathException.class);
@@ -559,6 +563,41 @@ public class NameNodeRpcServer implements NamenodeProtocols {
         this.clientRpcServer.addAuxiliaryListener(auxiliaryPort);
       }
     }
+  }
+
+  /**
+   * Address to advertise for a configured RPC address. The reverse DNS name of
+   * an IP literal is used only if it resolves back to that address, so that
+   * connections by name reach the address the server listens on. Otherwise the
+   * literal is kept as the host name of the returned address.
+   */
+  @VisibleForTesting
+  static InetSocketAddress getAdvertisedAddress(InetSocketAddress addr, int port)
+      throws UnknownHostException {
+    String host = addr.getHostString();
+    InetAddress ip = addr.getAddress();
+    if (ip == null || !InetAddresses.isInetAddress(host)) {
+      return new InetSocketAddress(host, port);
+    }
+    int scopeId = ip instanceof Inet6Address ? ((Inet6Address) ip).getScopeId() : 0;
+    String name = host;
+    // A scoped literal is kept, since a name loses the scope and InetAddress.equals() ignores it.
+    if (scopeId == 0) {
+      // getCanonicalHostName() does the reverse lookup even if the resolver kept the literal
+      // as the host name (hadoop.security.token.service.use_ip=false).
+      String reverse = ip.getCanonicalHostName();
+      try {
+        if (SecurityUtil.getByName(reverse).equals(ip)) {
+          name = reverse;
+        }
+      } catch (UnknownHostException e) {
+        // keep the literal
+      }
+    }
+    InetAddress advertised = scopeId != 0
+        ? Inet6Address.getByAddress(name, ip.getAddress(), scopeId)
+        : InetAddress.getByAddress(name, ip.getAddress());
+    return new InetSocketAddress(advertised, port);
   }
 
   /** Allow access to the lifeline RPC server for testing */
@@ -648,7 +687,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   /////////////////////////////////////////////////////
   @Override // NamenodeProtocol
   public BlocksWithLocations getBlocks(DatanodeInfo datanode, long size, long
-      minBlockSize, long timeInterval)
+      minBlockSize, long timeInterval, StorageType storageType)
       throws IOException {
     String operationName = "getBlocks";
     if(size <= 0) {
@@ -662,7 +701,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
     checkNNStartup();
     namesystem.checkSuperuserPrivilege(operationName);
     namesystem.checkNameNodeSafeMode("Cannot execute getBlocks");
-    return namesystem.getBlocks(datanode, size, minBlockSize, timeInterval);
+    return namesystem.getBlocks(datanode, size, minBlockSize, timeInterval, storageType);
   }
 
   @Override // NamenodeProtocol
@@ -992,6 +1031,7 @@ public class NameNodeRpcServer implements NamenodeProtocols {
   public void reportBadBlocks(LocatedBlock[] blocks) throws IOException {
     checkNNStartup();
     namesystem.reportBadBlocks(blocks);
+    namesystem.logAuditEvent(true, "reportBadBlocks", null);
   }
 
   @Override // ClientProtocol
@@ -1360,6 +1400,14 @@ public class NameNodeRpcServer implements NamenodeProtocols {
     namesystem.checkSuperuserPrivilege(operationName);
     return namesystem.getFSImage().getMostRecentCheckpointTxId();
   }
+
+  @Override // NamenodeProtocol
+  public long getMostRecentNameNodeFileTxId(NNStorage.NameNodeFile nnf) throws IOException {
+    checkNNStartup();
+    namesystem.checkOperation(OperationCategory.UNCHECKED);
+    namesystem.checkSuperuserPrivilege();
+    return namesystem.getFSImage().getMostRecentNameNodeFileTxId(nnf);
+  }
   
   @Override // NamenodeProtocol
   public CheckpointSignature rollEditLog() throws IOException {
@@ -1650,6 +1698,11 @@ public class NameNodeRpcServer implements NamenodeProtocols {
           noStaleStorages = bm.runBlockOp(() ->
             bm.processReport(nodeReg, reports[index].getStorage(),
                 blocks, context));
+        }
+      } else {
+        if (bm.shouldRejectInvalidBlockReportLease()) {
+          throw new InvalidBlockReportLeaseException(
+              context.getReportId(), context.getLeaseId());
         }
       }
     } catch (UnregisteredNodeException une) {
@@ -2673,5 +2726,12 @@ public class NameNodeRpcServer implements NamenodeProtocols {
           + "external SPS service is not allowed to fetch the path Ids");
     }
     return namesystem.getBlockManager().getSPSManager().getNextPathId();
+  }
+
+  @Override // ClientProtocol
+  public Path getEnclosingRoot(String src)
+      throws IOException {
+    checkNNStartup();
+    return namesystem.getEnclosingRoot(src);
   }
 }

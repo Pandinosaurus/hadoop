@@ -37,6 +37,7 @@ import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_PMEM_CACHE_RECOV
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_PMEM_CACHE_RECOVERY_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_PROCESS_COMMANDS_THRESHOLD_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_PROCESS_COMMANDS_THRESHOLD_KEY;
+import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_DATANODE_SLOW_IO_WARNING_THRESHOLD_KEY;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_ENCRYPT_DATA_OVERWRITE_DOWNSTREAM_DERIVED_QOP_DEFAULT;
 import static org.apache.hadoop.hdfs.DFSConfigKeys.DFS_ENCRYPT_DATA_OVERWRITE_DOWNSTREAM_DERIVED_QOP_KEY;
 import static org.apache.hadoop.hdfs.client.HdfsClientConfigKeys.DFS_CLIENT_SOCKET_TIMEOUT_KEY;
@@ -112,9 +113,10 @@ public class DNConf {
   volatile boolean diskStatsEnabled;
   volatile long outliersReportIntervalMs;
   final long ibrInterval;
+  final long ibrMaxPendingBlocks;
   volatile long initialBlockReportDelayMs;
   volatile long cacheReportInterval;
-  final long datanodeSlowIoWarningThresholdMs;
+  private volatile long datanodeSlowIoWarningThresholdMs;
 
   final String minimumNameNodeVersion;
   final String encryptionAlgorithm;
@@ -205,6 +207,9 @@ public class DNConf {
     this.ibrInterval = getConf().getLong(
         DFSConfigKeys.DFS_BLOCKREPORT_INCREMENTAL_INTERVAL_MSEC_KEY,
         DFSConfigKeys.DFS_BLOCKREPORT_INCREMENTAL_INTERVAL_MSEC_DEFAULT);
+    this.ibrMaxPendingBlocks = getConf().getLong(
+        DFSConfigKeys.DFS_DATANODE_IBR_MAX_PENDING_BLOCKS_KEY,
+        DFSConfigKeys.DFS_DATANODE_IBR_MAX_PENDING_BLOCKS_DEFAULT);
     this.blockReportSplitThreshold = getConf().getLong(
         DFS_BLOCKREPORT_SPLIT_THRESHOLD_KEY,
         DFS_BLOCKREPORT_SPLIT_THRESHOLD_DEFAULT);
@@ -220,10 +225,10 @@ public class DNConf {
         DFS_HEARTBEAT_INTERVAL_DEFAULT, TimeUnit.SECONDS,
         TimeUnit.MILLISECONDS);
     long confLifelineIntervalMs =
-        getConf().getLong(DFS_DATANODE_LIFELINE_INTERVAL_SECONDS_KEY,
-        3 * getConf().getTimeDuration(DFS_HEARTBEAT_INTERVAL_KEY,
-        DFS_HEARTBEAT_INTERVAL_DEFAULT, TimeUnit.SECONDS,
-            TimeUnit.MILLISECONDS));
+        getConf().getTimeDuration(DFS_DATANODE_LIFELINE_INTERVAL_SECONDS_KEY,
+            3 * getConf().getTimeDuration(DFS_HEARTBEAT_INTERVAL_KEY,
+                DFS_HEARTBEAT_INTERVAL_DEFAULT, TimeUnit.SECONDS),
+            TimeUnit.SECONDS, TimeUnit.MILLISECONDS);
     if (confLifelineIntervalMs <= heartBeatInterval) {
       confLifelineIntervalMs = 3 * heartBeatInterval;
       DataNode.LOG.warn(
@@ -521,5 +526,11 @@ public class DNConf {
     outliersReportIntervalMs = getConf().getTimeDuration(
         DFS_DATANODE_OUTLIERS_REPORT_INTERVAL_KEY,
         DFS_DATANODE_OUTLIERS_REPORT_INTERVAL_DEFAULT, TimeUnit.MILLISECONDS);
+  }
+
+  public void setDatanodeSlowIoWarningThresholdMs(long threshold) {
+    Preconditions.checkArgument(threshold > 0,
+        DFS_DATANODE_SLOW_IO_WARNING_THRESHOLD_KEY + " should be greater than 0");
+    datanodeSlowIoWarningThresholdMs = threshold;
   }
 }

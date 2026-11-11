@@ -24,7 +24,12 @@ import static org.apache.hadoop.util.Time.monotonicNow;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -40,6 +45,7 @@ import org.apache.curator.framework.imps.CuratorFrameworkState;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hdfs.server.federation.router.RBFConfigKeys;
 import org.apache.hadoop.hdfs.server.federation.store.driver.StateStoreDriver;
+import org.apache.hadoop.hdfs.server.federation.store.driver.StateStoreOperationResult;
 import org.apache.hadoop.hdfs.server.federation.store.records.BaseRecord;
 import org.apache.hadoop.hdfs.server.federation.store.records.Query;
 import org.apache.hadoop.hdfs.server.federation.store.records.QueryResult;
@@ -102,9 +108,10 @@ public class StateStoreZooKeeperImpl extends StateStoreSerializableImpl {
     } else {
       LOG.info("Init StateStoreZookeeperImpl by sync mode.");
     }
+    String zkHostPort = conf.get(RBFConfigKeys.FEDERATION_STORE_ZK_ADDRESS);
     try {
       this.zkManager = new ZKCuratorManager(conf);
-      this.zkManager.start();
+      this.zkManager.start(zkHostPort);
       this.zkAcl = ZKCuratorManager.getZKAcls(conf);
     } catch (IOException e) {
       LOG.error("Cannot initialize the ZK connection", e);
@@ -134,6 +141,7 @@ public class StateStoreZooKeeperImpl extends StateStoreSerializableImpl {
 
   @Override
   public void close() throws Exception {
+    super.close();
     if (executorService != null) {
       executorService.shutdown();
     }
@@ -230,11 +238,11 @@ public class StateStoreZooKeeperImpl extends StateStoreSerializableImpl {
   }
 
   @Override
-  public <T extends BaseRecord> boolean putAll(
+  public <T extends BaseRecord> StateStoreOperationResult putAll(
       List<T> records, boolean update, boolean error) throws IOException {
     verifyDriverReady();
     if (records.isEmpty()) {
-      return true;
+      return StateStoreOperationResult.getDefaultSuccessResult();
     }
 
     // All records should be the same
@@ -245,6 +253,7 @@ public class StateStoreZooKeeperImpl extends StateStoreSerializableImpl {
     long start = monotonicNow();
     final AtomicBoolean status = new AtomicBoolean(true);
     List<Callable<Void>> callables = new ArrayList<>();
+    final List<String> failedRecordsKeys = Collections.synchronizedList(new ArrayList<>());
     records.forEach(record ->
         callables.add(
             () -> {
@@ -252,6 +261,7 @@ public class StateStoreZooKeeperImpl extends StateStoreSerializableImpl {
               String recordZNode = getNodePath(znode, primaryKey);
               byte[] data = serialize(record);
               if (!writeNode(recordZNode, data, update, error)) {
+                failedRecordsKeys.add(getOriginalPrimaryKey(primaryKey));
                 status.set(false);
               }
               return null;
@@ -276,42 +286,51 @@ public class StateStoreZooKeeperImpl extends StateStoreSerializableImpl {
     } else {
       getMetrics().addFailure(end - start);
     }
-    return status.get();
+    return new StateStoreOperationResult(failedRecordsKeys, status.get());
   }
 
   @Override
-  public <T extends BaseRecord> int remove(
-      Class<T> clazz, Query<T> query) throws IOException {
+  public <T extends BaseRecord> Map<Query<T>, Integer> remove(Class<T> clazz,
+      List<Query<T>> queries) throws IOException {
     verifyDriverReady();
-    if (query == null) {
-      return 0;
+    // Track how many entries are deleted by each query
+    Map<Query<T>, Integer> ret = new HashMap<>();
+    final List<T> trueRemoved = Collections.synchronizedList(new ArrayList<>());
+    if (queries.isEmpty()) {
+      return ret;
     }
 
     // Read the current data
     long start = monotonicNow();
-    List<T> records = null;
+    List<T> records;
     try {
       QueryResult<T> result = get(clazz);
       records = result.getRecords();
     } catch (IOException ex) {
       LOG.error("Cannot get existing records", ex);
       getMetrics().addFailure(monotonicNow() - start);
-      return 0;
+      return ret;
     }
 
     // Check the records to remove
     String znode = getZNodeForClass(clazz);
-    List<T> recordsToRemove = filterMultiple(query, records);
+    Set<T> recordsToRemove = new HashSet<>();
+    Map<Query<T>, List<T>> queryToRecords = new HashMap<>();
+    for (Query<T> query : queries) {
+      List<T> filtered = filterMultiple(query, records);
+      queryToRecords.put(query, filtered);
+      recordsToRemove.addAll(filtered);
+    }
 
     // Remove the records
-    int removed = 0;
-    for (T existingRecord : recordsToRemove) {
+    List<Callable<Void>> callables = new ArrayList<>();
+    recordsToRemove.forEach(existingRecord -> callables.add(() -> {
       LOG.info("Removing \"{}\"", existingRecord);
       try {
         String primaryKey = getPrimaryKey(existingRecord);
         String path = getNodePath(znode, primaryKey);
         if (zkManager.delete(path)) {
-          removed++;
+          trueRemoved.add(existingRecord);
         } else {
           LOG.error("Did not remove \"{}\"", existingRecord);
         }
@@ -319,12 +338,38 @@ public class StateStoreZooKeeperImpl extends StateStoreSerializableImpl {
         LOG.error("Cannot remove \"{}\"", existingRecord, e);
         getMetrics().addFailure(monotonicNow() - start);
       }
+      return null;
+    }));
+    try {
+      if (enableConcurrent) {
+        executorService.invokeAll(callables);
+      } else {
+        for (Callable<Void> callable : callables) {
+          callable.call();
+        }
+      }
+    } catch (Exception e) {
+      LOG.error("Record removal failed : {}", e.getMessage(), e);
     }
     long end = monotonicNow();
-    if (removed > 0) {
+    if (!trueRemoved.isEmpty()) {
       getMetrics().addRemove(end - start);
     }
-    return removed;
+    // Generate return map
+    for (Map.Entry<Query<T>, List<T>> entry : queryToRecords.entrySet()) {
+      for (T record : entry.getValue()) {
+        if (trueRemoved.contains(record)) {
+          ret.compute(entry.getKey(), (k, v) ->  (v == null) ? 1 : v + 1);
+        }
+      }
+    }
+    return ret;
+  }
+
+  @Override
+  public <T extends BaseRecord> int remove(Class<T> clazz, Query<T> query)
+      throws IOException {
+    return remove(clazz, Collections.singletonList(query)).get(query);
   }
 
   @Override

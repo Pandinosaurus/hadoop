@@ -24,28 +24,32 @@ import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.delegation.web.DelegationTokenAuthenticatedURL;
 import org.apache.hadoop.test.GenericTestUtils;
-import org.junit.Before;
-import org.junit.Rule;
-import org.junit.Test;
-import org.junit.rules.Timeout;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.Timeout;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.event.Level;
 
 import java.io.IOException;
+import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.net.URL;
-import java.util.concurrent.TimeUnit;
 
 import static org.apache.hadoop.crypto.key.kms.KMSDelegationToken.TOKEN_KIND;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 /**
  * Unit test for {@link KMSClientProvider} class.
  */
+@Timeout(60)
 public class TestKMSClientProvider {
 
   public static final Logger LOG =
@@ -57,14 +61,11 @@ public class TestKMSClientProvider {
   private final String providerUriString = "kms://https@host:16000/kms";
   private final String oldTokenService = "host:16000";
 
-  @Rule
-  public Timeout globalTimeout = new Timeout(60000, TimeUnit.MILLISECONDS);
-
   {
     GenericTestUtils.setLogLevel(KMSClientProvider.LOG, Level.TRACE);
   }
 
-  @Before
+  @BeforeEach
   public void setup() {
     SecurityUtil.setTokenServiceUseIp(false);
     token.setKind(TOKEN_KIND);
@@ -109,7 +110,7 @@ public class TestKMSClientProvider {
       creds.addToken(token.getService(), token);
       creds.addToken(oldToken.getService(), oldToken);
       final Token t = kp.selectDelegationToken(creds);
-      assertEquals("new token should be selected when both exist", token, t);
+      assertEquals(token, t, "new token should be selected when both exist");
     } finally {
       kp.close();
     }
@@ -135,5 +136,21 @@ public class TestKMSClientProvider {
     creds.addToken(tok.getService(), tok);
     final Token chosen = url.selectDelegationToken(new URL(urlString), creds);
     assertEquals(tok, chosen);
+  }
+
+  @Test
+  public void testIsChunkedHttpResponse() {
+    HttpURLConnection conn = mock(HttpURLConnection.class);
+    when(conn.getHeaderField("Transfer-Encoding")).thenReturn("chunked");
+    assertTrue(KMSClientProvider.isChunkedHttpResponse(conn));
+
+    when(conn.getHeaderField("Transfer-Encoding")).thenReturn("CHUNKED");
+    assertTrue(KMSClientProvider.isChunkedHttpResponse(conn));
+
+    when(conn.getHeaderField("Transfer-Encoding")).thenReturn(null);
+    assertFalse(KMSClientProvider.isChunkedHttpResponse(conn));
+
+    when(conn.getHeaderField("Transfer-Encoding")).thenReturn("gzip");
+    assertFalse(KMSClientProvider.isChunkedHttpResponse(conn));
   }
 }
